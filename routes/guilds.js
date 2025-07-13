@@ -1,6 +1,6 @@
 const express = require("express")
 const { supabase } = require("../config/database")
-const { getGuild, client } = require("../config/discord")
+const { getGuild } = require("../config/discord")
 const { authenticateApiKey, requireAdmin, requireGuildAccess } = require("../middleware/auth")
 
 const router = express.Router()
@@ -8,16 +8,17 @@ const router = express.Router()
 // Get all guilds
 router.get("/", authenticateApiKey, async (req, res) => {
   try {
-    const { data: guilds, error } = await supabase.from("guilds").select("*").order("updated_at", { ascending: false })
+    const { data, error } = await supabase.from("guilds").select("*").order("created_at", { ascending: false })
 
     if (error) {
-      throw error
+      console.error("Error fetching guilds:", error)
+      return res.status(500).json({ error: "Failed to fetch guilds", details: error.message })
     }
 
-    res.json(guilds)
+    res.json(data || [])
   } catch (error) {
-    console.error("Get guilds error:", error)
-    res.status(500).json({ error: "Failed to get guilds", details: error.message })
+    console.error("Guilds fetch error:", error)
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -54,19 +55,22 @@ router.get("/me", authenticateApiKey, async (req, res) => {
   }
 })
 
-// Get guild by ID
+// Get specific guild
 router.get("/:guildId", authenticateApiKey, async (req, res) => {
   try {
-    const { data: guild, error } = await supabase.from("guilds").select("*").eq("guild_id", req.params.guildId).single()
+    const { guildId } = req.params
 
-    if (error || !guild) {
-      return res.status(404).json({ error: "Guild not found" })
+    const { data, error } = await supabase.from("guilds").select("*").eq("guild_id", guildId).single()
+
+    if (error) {
+      console.error("Error fetching guild:", error)
+      return res.status(404).json({ error: "Guild not found", details: error.message })
     }
 
-    res.json(guild)
+    res.json(data)
   } catch (error) {
-    console.error("Get guild error:", error)
-    res.status(500).json({ error: "Failed to get guild", details: error.message })
+    console.error("Guild fetch error:", error)
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -115,46 +119,49 @@ router.post("/:guildId/sync", authenticateApiKey, async (req, res) => {
   }
 })
 
-// Add new guild - FIXED TO USE UPSERT
+// Add or update guild (UPSERT)
 router.post("/", authenticateApiKey, async (req, res) => {
-  const { guild_id, name, icon, member_count, owner_id, description, features, premium_tier } = req.body
-
-  if (!guild_id || !name) {
-    return res.status(400).json({ error: "guild_id and name are required" })
-  }
-
   try {
-    // Use UPSERT instead of INSERT to handle duplicates
-    const { data: guild, error } = await supabase
+    const guildData = req.body
+
+    // Validate required fields
+    if (!guildData.guild_id || !guildData.name) {
+      return res.status(400).json({ error: "guild_id and name are required" })
+    }
+
+    // Prepare guild data for upsert
+    const guildToUpsert = {
+      guild_id: guildData.guild_id.toString(),
+      name: guildData.name,
+      icon: guildData.icon || null,
+      description: guildData.description || null,
+      owner_id: guildData.owner_id?.toString() || null,
+      member_count: guildData.member_count || 0,
+      features: guildData.features || [],
+      premium_tier: guildData.premium_tier || 0,
+      joined_at: guildData.joined_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+
+    // Use upsert to handle duplicates
+    const { data, error } = await supabase
       .from("guilds")
-      .upsert(
-        {
-          guild_id,
-          name,
-          icon: icon || null,
-          member_count: member_count || 0,
-          owner_id: owner_id || null,
-          description: description || null,
-          features: features || [],
-          premium_tier: premium_tier || 0,
-          joined_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "guild_id",
-        },
-      )
+      .upsert(guildToUpsert, {
+        onConflict: "guild_id",
+        ignoreDuplicates: false,
+      })
       .select()
       .single()
 
     if (error) {
-      throw error
+      console.error("Add guild error:", error)
+      return res.status(500).json({ error: "Failed to add/update guild", details: error.message })
     }
 
-    res.status(201).json(guild)
+    res.status(201).json(data)
   } catch (error) {
-    console.error("Add guild error:", error)
-    res.status(500).json({ error: "Failed to add guild", details: error.message })
+    console.error("Guild add/update error:", error)
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -193,16 +200,19 @@ router.patch("/:guildId", authenticateApiKey, async (req, res) => {
 // Delete guild
 router.delete("/:guildId", authenticateApiKey, requireAdmin, async (req, res) => {
   try {
-    const { error } = await supabase.from("guilds").delete().eq("guild_id", req.params.guildId)
+    const { guildId } = req.params
+
+    const { error } = await supabase.from("guilds").delete().eq("guild_id", guildId)
 
     if (error) {
-      throw error
+      console.error("Error deleting guild:", error)
+      return res.status(500).json({ error: "Failed to delete guild", details: error.message })
     }
 
     res.json({ success: true, message: "Guild deleted successfully" })
   } catch (error) {
-    console.error("Delete guild error:", error)
-    res.status(500).json({ error: "Failed to delete guild", details: error.message })
+    console.error("Guild delete error:", error)
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -211,10 +221,6 @@ router.get("/:guildId/commands", authenticateApiKey, async (req, res) => {
   try {
     const { guildId } = req.params
 
-    if (!guildId) {
-      return res.status(400).json({ error: "Guild ID is required" })
-    }
-
     const { data, error } = await supabase
       .from("guild_commands")
       .select("*")
@@ -222,42 +228,37 @@ router.get("/:guildId/commands", authenticateApiKey, async (req, res) => {
       .order("command_name")
 
     if (error) {
-      throw error
+      console.error("Error fetching guild commands:", error)
+      return res.status(500).json({ error: "Failed to fetch commands", details: error.message })
     }
 
-    res.json(data)
+    res.json(data || [])
   } catch (error) {
     console.error("Guild commands fetch error:", error)
-    res.status(500).json({
-      error: "Failed to fetch commands",
-      details: error.message,
-    })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
-// Sync guild commands - FIXED TO USE UPSERT
+// Sync guild commands
 router.post("/:guildId/commands/sync", authenticateApiKey, async (req, res) => {
   try {
     const { guildId } = req.params
     const { commands } = req.body
 
-    if (!guildId) {
-      return res.status(400).json({ error: "Guild ID is required" })
-    }
-
     if (!commands || !Array.isArray(commands)) {
       return res.status(400).json({ error: "Commands array is required" })
     }
 
-    // Sync commands to guild_commands table using UPSERT
+    // Prepare commands for upsert
     const commandsToUpsert = commands.map((cmd) => ({
-      guild_id: guildId,
-      command_name: cmd.name,
-      is_enabled: cmd.enabled !== false,
-      usage_count: cmd.usage_count || 0,
+      guild_id: guildId.toString(),
+      command_name: cmd.name || cmd.command_name,
+      is_enabled: cmd.is_enabled !== undefined ? cmd.is_enabled : true,
+      created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }))
 
+    // Use upsert to handle duplicates
     const { data, error } = await supabase
       .from("guild_commands")
       .upsert(commandsToUpsert, {
@@ -267,16 +268,18 @@ router.post("/:guildId/commands/sync", authenticateApiKey, async (req, res) => {
       .select()
 
     if (error) {
-      throw error
+      console.error("Command sync error:", error)
+      return res.status(500).json({ error: "Failed to sync commands", details: error.message })
     }
 
-    res.json({ success: true, synced: data.length, commands: data })
+    res.json({
+      success: true,
+      synced_commands: data?.length || 0,
+      commands: data,
+    })
   } catch (error) {
     console.error("Command sync error:", error)
-    res.status(500).json({
-      error: "Failed to sync commands",
-      details: error.message,
-    })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -284,39 +287,28 @@ router.post("/:guildId/commands/sync", authenticateApiKey, async (req, res) => {
 router.put("/:guildId/commands/:commandName", authenticateApiKey, async (req, res) => {
   try {
     const { guildId, commandName } = req.params
-    const { enabled } = req.body
-
-    if (!guildId || !commandName) {
-      return res.status(400).json({ error: "Guild ID and command name are required" })
-    }
+    const { is_enabled } = req.body
 
     const { data, error } = await supabase
       .from("guild_commands")
-      .upsert(
-        {
-          guild_id: guildId,
-          command_name: commandName,
-          is_enabled: enabled !== false,
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "guild_id,command_name",
-        },
-      )
+      .update({
+        is_enabled,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("guild_id", guildId)
+      .eq("command_name", commandName)
       .select()
       .single()
 
     if (error) {
-      throw error
+      console.error("Error updating command:", error)
+      return res.status(500).json({ error: "Failed to update command", details: error.message })
     }
 
-    res.json({ success: true, data })
+    res.json(data)
   } catch (error) {
     console.error("Command update error:", error)
-    res.status(500).json({
-      error: "Failed to update command",
-      details: error.message,
-    })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
