@@ -96,9 +96,41 @@ const requireGuildAccess = async (req, res, next) => {
   }
 }
 
+const authenticateApiKey = (req, res, next) => {
+  const authHeader = req.headers["authorization"]
+  const apiKey = authHeader && authHeader.split(" ")[1]
+  
+  // Check if it's an API key request
+  if (authHeader && authHeader.startsWith("Bearer ") && apiKey) {
+    const expectedApiKey = process.env.BOT_API_KEY
+    
+    if (!expectedApiKey) {
+      return res.status(500).json({ error: "API key not configured" })
+    }
+    
+    if (apiKey === expectedApiKey) {
+      // Set a bot user context
+      req.user = { 
+        id: 'bot', 
+        discord_id: 'bot', 
+        username: 'MinBot', 
+        is_admin: true, // Bot has admin access
+        is_bot: true 
+      }
+      return next()
+    } else {
+      return res.status(401).json({ error: "Invalid API key" })
+    }
+  }
+  
+  // Fall back to JWT authentication
+  return authenticateToken(req, res, next)
+}
+
 module.exports = {
   generateToken,
   authenticateToken,
+  authenticateApiKey,
   requireAdmin,
   requireGuildAccess,
 }
