@@ -1,4 +1,4 @@
-# 🚀 Discord Bot Dashboard API
+# 🚀 Minbot Dashboard API
 
 A comprehensive REST API for managing Discord bots with full CRUD operations, real-time Discord integration, and advanced features.
 
