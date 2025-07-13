@@ -79,17 +79,25 @@ router.post("/:guildId/sync", authenticateApiKey, async (req, res) => {
       return res.status(404).json({ error: "Guild not found on Discord" })
     }
 
-    // Upsert guild info
+    // Use UPSERT to handle existing guilds
     const { data: updatedGuild, error } = await supabase
       .from("guilds")
-      .upsert({
-        guild_id: req.params.guildId,
-        name: discordGuild.name,
-        icon: discordGuild.icon,
-        member_count: discordGuild.memberCount,
-        owner_id: discordGuild.ownerId,
-        updated_at: new Date().toISOString(),
-      })
+      .upsert(
+        {
+          guild_id: req.params.guildId,
+          name: discordGuild.name,
+          icon: discordGuild.icon,
+          member_count: discordGuild.memberCount,
+          owner_id: discordGuild.ownerId,
+          description: discordGuild.description || null,
+          features: discordGuild.features || [],
+          premium_tier: discordGuild.premiumTier || 0,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "guild_id",
+        },
+      )
       .select()
       .single()
 
@@ -107,25 +115,35 @@ router.post("/:guildId/sync", authenticateApiKey, async (req, res) => {
   }
 })
 
-// Add new guild
+// Add new guild - FIXED TO USE UPSERT
 router.post("/", authenticateApiKey, async (req, res) => {
-  const { guild_id, name, icon, member_count, owner_id } = req.body
+  const { guild_id, name, icon, member_count, owner_id, description, features, premium_tier } = req.body
 
   if (!guild_id || !name) {
     return res.status(400).json({ error: "guild_id and name are required" })
   }
 
   try {
+    // Use UPSERT instead of INSERT to handle duplicates
     const { data: guild, error } = await supabase
       .from("guilds")
-      .upsert({
-        guild_id,
-        name,
-        icon,
-        member_count: member_count || 0,
-        owner_id,
-        updated_at: new Date().toISOString(),
-      })
+      .upsert(
+        {
+          guild_id,
+          name,
+          icon: icon || null,
+          member_count: member_count || 0,
+          owner_id: owner_id || null,
+          description: description || null,
+          features: features || [],
+          premium_tier: premium_tier || 0,
+          joined_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "guild_id",
+        },
+      )
       .select()
       .single()
 
@@ -217,7 +235,7 @@ router.get("/:guildId/commands", authenticateApiKey, async (req, res) => {
   }
 })
 
-// Sync guild commands
+// Sync guild commands - FIXED TO USE UPSERT
 router.post("/:guildId/commands/sync", authenticateApiKey, async (req, res) => {
   try {
     const { guildId } = req.params
@@ -231,7 +249,7 @@ router.post("/:guildId/commands/sync", authenticateApiKey, async (req, res) => {
       return res.status(400).json({ error: "Commands array is required" })
     }
 
-    // Sync commands to guild_commands table
+    // Sync commands to guild_commands table using UPSERT
     const commandsToUpsert = commands.map((cmd) => ({
       guild_id: guildId,
       command_name: cmd.name,
@@ -242,7 +260,10 @@ router.post("/:guildId/commands/sync", authenticateApiKey, async (req, res) => {
 
     const { data, error } = await supabase
       .from("guild_commands")
-      .upsert(commandsToUpsert, { onConflict: "guild_id,command_name" })
+      .upsert(commandsToUpsert, {
+        onConflict: "guild_id,command_name",
+        ignoreDuplicates: false,
+      })
       .select()
 
     if (error) {
@@ -271,12 +292,17 @@ router.put("/:guildId/commands/:commandName", authenticateApiKey, async (req, re
 
     const { data, error } = await supabase
       .from("guild_commands")
-      .upsert({
-        guild_id: guildId,
-        command_name: commandName,
-        is_enabled: enabled !== false,
-        updated_at: new Date().toISOString(),
-      })
+      .upsert(
+        {
+          guild_id: guildId,
+          command_name: commandName,
+          is_enabled: enabled !== false,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "guild_id,command_name",
+        },
+      )
       .select()
       .single()
 
