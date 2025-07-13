@@ -233,4 +233,206 @@ router.delete("/:guildId/punishment/:logId", authenticateApiKey, requireGuildAcc
   }
 })
 
+// Get moderation logs
+router.get("/logs", authenticateApiKey, async (req, res) => {
+  try {
+    const { guild_id, limit = 50 } = req.query
+
+    let query = supabase
+      .from("mod_logs_with_usernames")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(Number.parseInt(limit))
+
+    if (guild_id) {
+      query = query.eq("guild_id", guild_id)
+    }
+
+    const { data: logs, error } = await query
+
+    if (error) {
+      console.error("Error fetching mod logs:", error)
+      return res.status(500).json({ error: "Failed to fetch moderation logs" })
+    }
+
+    res.json({ logs })
+  } catch (error) {
+    console.error("Mod logs fetch error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+
+// Execute punishment
+router.post("/punish", authenticateApiKey, async (req, res) => {
+  try {
+    const { guild_id, user_id, moderator_id, action, reason, duration } = req.body
+
+    if (!guild_id || !user_id || !moderator_id || !action) {
+      return res.status(400).json({
+        error: "Guild ID, user ID, moderator ID, and action are required",
+      })
+    }
+
+    // Get guild and member
+    const guild = await getGuild(guild_id)
+    if (!guild) {
+      return res.status(404).json({ error: "Guild not found" })
+    }
+
+    const member = await getGuildMember(guild_id, user_id)
+    if (!member) {
+      return res.status(404).json({ error: "Member not found" })
+    }
+
+    let success = false
+    const details = { reason: reason || "No reason provided" }
+
+    try {
+      switch (action.toLowerCase()) {
+        case "ban":
+          await member.ban({ reason: reason || "No reason provided" })
+          success = true
+          break
+
+        case "kick":
+          await member.kick(reason || "No reason provided")
+          success = true
+          break
+
+        case "timeout":
+        case "mute":
+          if (duration) {
+            const timeoutDuration = Number.parseInt(duration) * 60 * 1000 // Convert minutes to milliseconds
+            await member.timeout(timeoutDuration, reason || "No reason provided")
+            details.duration = duration
+            success = true
+          } else {
+            return res.status(400).json({ error: "Duration required for timeout" })
+          }
+          break
+
+        case "warn":
+          // Warnings are just logged, no Discord action needed
+          success = true
+          break
+
+        default:
+          return res.status(400).json({ error: "Invalid action type" })
+      }
+    } catch (discordError) {
+      console.error("Discord punishment error:", discordError)
+      return res.status(500).json({
+        error: "Failed to execute punishment in Discord",
+        details: discordError.message,
+      })
+    }
+
+    if (success) {
+      // Log the moderation action
+      const { data: log, error: logError } = await supabase
+        .from("mod_logs")
+        .insert({
+          guild_id,
+          user_id,
+          moderator_id,
+          action,
+          details,
+        })
+        .select()
+        .single()
+
+      if (logError) {
+        console.error("Error logging moderation action:", logError)
+      }
+
+      // Add to punishments table if applicable
+      if (["ban", "timeout", "mute"].includes(action.toLowerCase())) {
+        const expiresAt = duration ? new Date(Date.now() + Number.parseInt(duration) * 60 * 1000).toISOString() : null
+
+        await supabase.from("punishments").insert({
+          user_id,
+          moderator_id,
+          command_name: action,
+          reason: reason || "No reason provided",
+          expires_at: expiresAt,
+          active: true,
+        })
+      }
+
+      res.json({
+        success: true,
+        message: `${action} executed successfully`,
+        log,
+      })
+    }
+  } catch (error) {
+    console.error("Punishment execution error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+
+// Remove punishment
+router.post("/unpunish", authenticateApiKey, async (req, res) => {
+  try {
+    const { guild_id, user_id, action } = req.body
+
+    if (!guild_id || !user_id || !action) {
+      return res.status(400).json({
+        error: "Guild ID, user ID, and action are required",
+      })
+    }
+
+    const guild = await getGuild(guild_id)
+    if (!guild) {
+      return res.status(404).json({ error: "Guild not found" })
+    }
+
+    let success = false
+
+    try {
+      switch (action.toLowerCase()) {
+        case "unban":
+          await guild.members.unban(user_id)
+          success = true
+          break
+
+        case "untimeout":
+        case "unmute":
+          const member = await getGuildMember(guild_id, user_id)
+          if (member) {
+            await member.timeout(null)
+            success = true
+          }
+          break
+
+        default:
+          return res.status(400).json({ error: "Invalid action type" })
+      }
+    } catch (discordError) {
+      console.error("Discord unpunish error:", discordError)
+      return res.status(500).json({
+        error: "Failed to remove punishment in Discord",
+        details: discordError.message,
+      })
+    }
+
+    if (success) {
+      // Deactivate punishment in database
+      await supabase
+        .from("punishments")
+        .update({ active: false })
+        .eq("user_id", user_id)
+        .eq("command_name", action.replace("un", ""))
+
+      res.json({
+        success: true,
+        message: `${action} executed successfully`,
+      })
+    }
+  } catch (error) {
+    console.error("Unpunish error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+
 module.exports = router

@@ -1,264 +1,135 @@
 const express = require("express")
-const { supabase } = require("../config/database")
-const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
-
 const router = express.Router()
+const { supabase } = require("../config/database")
+const { authenticateApiKey } = require("../middleware/auth")
 
 // Get guild settings
-router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
+router.get("/guild/:guildId", authenticateApiKey, async (req, res) => {
   try {
-    const { data: settings, error } = await supabase
-      .from("guild_settings")
-      .select("*")
-      .eq("guild_id", req.params.guildId)
-      .single()
+    const { guildId } = req.params
+
+    const { data: settings, error } = await supabase.from("guild_settings").select("*").eq("guild_id", guildId).single()
 
     if (error && error.code !== "PGRST116") {
-      throw error
+      console.error("Error fetching guild settings:", error)
+      return res.status(500).json({ error: "Failed to fetch guild settings" })
     }
 
-    // If no settings exist, return default settings
+    // Return default settings if none exist
     if (!settings) {
       const defaultSettings = {
-        guild_id: req.params.guildId,
-        prefix: "!",
-        welcome_enabled: false,
-        welcome_channel: null,
-        welcome_message: "Welcome to the server, {user}!",
-        leave_enabled: false,
-        leave_channel: null,
-        leave_message: "{user} has left the server.",
-        moderation_log_channel: null,
-        auto_role: null,
-        anti_spam_enabled: false,
-        anti_spam_threshold: 5,
-        auto_delete_commands: false,
-        command_cooldown: 3,
+        guild_id: guildId,
+        staff_log_channel_id: null,
+        muted_role_id: null,
+        join_leave_channel_id: null,
+        ticket_channel_id: null,
       }
-
-      return res.json(defaultSettings)
+      res.json({ settings: defaultSettings })
+    } else {
+      res.json({ settings })
     }
-
-    res.json(settings)
   } catch (error) {
-    console.error("Get guild settings error:", error)
-    res.status(500).json({ error: "Failed to get guild settings" })
+    console.error("Guild settings fetch error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
 // Update guild settings
-router.patch("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
-  const {
-    prefix,
-    welcome_enabled,
-    welcome_channel,
-    welcome_message,
-    leave_enabled,
-    leave_channel,
-    leave_message,
-    moderation_log_channel,
-    auto_role,
-    anti_spam_enabled,
-    anti_spam_threshold,
-    auto_delete_commands,
-    command_cooldown,
-  } = req.body
-
+router.put("/guild/:guildId", authenticateApiKey, async (req, res) => {
   try {
-    // Check if settings exist
-    const { data: existingSettings, error: fetchError } = await supabase
-      .from("guild_settings")
-      .select("*")
-      .eq("guild_id", req.params.guildId)
-      .single()
-
-    let settings
-    if (fetchError && fetchError.code === "PGRST116") {
-      // Create new settings
-      const { data: newSettings, error: createError } = await supabase
-        .from("guild_settings")
-        .insert({
-          guild_id: req.params.guildId,
-          prefix,
-          welcome_enabled,
-          welcome_channel,
-          welcome_message,
-          leave_enabled,
-          leave_channel,
-          leave_message,
-          moderation_log_channel,
-          auto_role,
-          anti_spam_enabled,
-          anti_spam_threshold,
-          auto_delete_commands,
-          command_cooldown,
-        })
-        .select()
-        .single()
-
-      if (createError) throw createError
-      settings = newSettings
-    } else {
-      if (fetchError) throw fetchError
-
-      // Update existing settings
-      const { data: updatedSettings, error: updateError } = await supabase
-        .from("guild_settings")
-        .update({
-          prefix,
-          welcome_enabled,
-          welcome_channel,
-          welcome_message,
-          leave_enabled,
-          leave_channel,
-          leave_message,
-          moderation_log_channel,
-          auto_role,
-          anti_spam_enabled,
-          anti_spam_threshold,
-          auto_delete_commands,
-          command_cooldown,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("guild_id", req.params.guildId)
-        .select()
-        .single()
-
-      if (updateError) throw updateError
-      settings = updatedSettings
-    }
-
-    res.json({
-      success: true,
-      settings,
-      message: "Guild settings updated successfully",
-    })
-  } catch (error) {
-    console.error("Update guild settings error:", error)
-    res.status(500).json({ error: "Failed to update guild settings" })
-  }
-})
-
-// Reset guild settings to defaults
-router.post("/:guildId/reset", authenticateApiKey, requireGuildAccess, async (req, res) => {
-  try {
-    const defaultSettings = {
-      prefix: "!",
-      welcome_enabled: false,
-      welcome_channel: null,
-      welcome_message: "Welcome to the server, {user}!",
-      leave_enabled: false,
-      leave_channel: null,
-      leave_message: "{user} has left the server.",
-      moderation_log_channel: null,
-      auto_role: null,
-      anti_spam_enabled: false,
-      anti_spam_threshold: 5,
-      auto_delete_commands: false,
-      command_cooldown: 3,
-      updated_at: new Date().toISOString(),
-    }
+    const { guildId } = req.params
+    const { staff_log_channel_id, muted_role_id, join_leave_channel_id, ticket_channel_id } = req.body
 
     const { data: settings, error } = await supabase
       .from("guild_settings")
       .upsert({
-        guild_id: req.params.guildId,
-        ...defaultSettings,
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-
-    res.json({
-      success: true,
-      settings,
-      message: "Guild settings reset to defaults",
-    })
-  } catch (error) {
-    console.error("Reset guild settings error:", error)
-    res.status(500).json({ error: "Failed to reset guild settings" })
-  }
-})
-
-// Get bot global settings (admin only)
-router.get("/bot/global", authenticateApiKey, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: "Admin access required" })
-  }
-
-  try {
-    const { data: settings, error } = await supabase.from("bot_settings").select("*").single()
-
-    if (error && error.code !== "PGRST116") {
-      throw error
-    }
-
-    // If no settings exist, return defaults
-    if (!settings) {
-      const defaultSettings = {
-        maintenance_mode: false,
-        global_announcement: null,
-        max_guilds: 1000,
-        default_prefix: "!",
-        support_server: null,
-        status_message: "Serving Discord communities",
-        activity_type: "WATCHING",
-      }
-
-      return res.json(defaultSettings)
-    }
-
-    res.json(settings)
-  } catch (error) {
-    console.error("Get bot settings error:", error)
-    res.status(500).json({ error: "Failed to get bot settings" })
-  }
-})
-
-// Update bot global settings (admin only)
-router.patch("/bot/global", authenticateApiKey, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: "Admin access required" })
-  }
-
-  const {
-    maintenance_mode,
-    global_announcement,
-    max_guilds,
-    default_prefix,
-    support_server,
-    status_message,
-    activity_type,
-  } = req.body
-
-  try {
-    const { data: settings, error } = await supabase
-      .from("bot_settings")
-      .upsert({
-        id: 1, // Single row for global settings
-        maintenance_mode,
-        global_announcement,
-        max_guilds,
-        default_prefix,
-        support_server,
-        status_message,
-        activity_type,
+        guild_id: guildId,
+        staff_log_channel_id: staff_log_channel_id || null,
+        muted_role_id: muted_role_id || null,
+        join_leave_channel_id: join_leave_channel_id || null,
+        ticket_channel_id: ticket_channel_id || null,
         updated_at: new Date().toISOString(),
       })
       .select()
       .single()
 
-    if (error) throw error
+    if (error) {
+      console.error("Error updating guild settings:", error)
+      return res.status(500).json({ error: "Failed to update guild settings" })
+    }
 
-    res.json({
-      success: true,
-      settings,
-      message: "Bot settings updated successfully",
-    })
+    res.json({ settings })
   } catch (error) {
-    console.error("Update bot settings error:", error)
-    res.status(500).json({ error: "Failed to update bot settings" })
+    console.error("Guild settings update error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+
+// Get bot global settings (admin only)
+router.get("/bot", authenticateApiKey, async (req, res) => {
+  try {
+    // Check if user is admin (this would need proper auth middleware)
+    if (!req.user || !req.user.is_admin) {
+      return res.status(403).json({ error: "Admin access required" })
+    }
+
+    const { data: settings, error } = await supabase.from("bot_settings").select("*").single()
+
+    if (error && error.code !== "PGRST116") {
+      console.error("Error fetching bot settings:", error)
+      return res.status(500).json({ error: "Failed to fetch bot settings" })
+    }
+
+    // Return default settings if none exist
+    if (!settings) {
+      const defaultSettings = {
+        maintenance_mode: false,
+        global_cooldown: 3,
+        max_warnings: 3,
+        auto_mod_enabled: true,
+      }
+      res.json({ settings: defaultSettings })
+    } else {
+      res.json({ settings })
+    }
+  } catch (error) {
+    console.error("Bot settings fetch error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+
+// Update bot global settings (admin only)
+router.put("/bot", authenticateApiKey, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user || !req.user.is_admin) {
+      return res.status(403).json({ error: "Admin access required" })
+    }
+
+    const { maintenance_mode, global_cooldown, max_warnings, auto_mod_enabled } = req.body
+
+    const { data: settings, error } = await supabase
+      .from("bot_settings")
+      .upsert({
+        id: 1, // Assuming single row for global settings
+        maintenance_mode: maintenance_mode || false,
+        global_cooldown: global_cooldown || 3,
+        max_warnings: max_warnings || 3,
+        auto_mod_enabled: auto_mod_enabled || true,
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) {
+      console.error("Error updating bot settings:", error)
+      return res.status(500).json({ error: "Failed to update bot settings" })
+    }
+
+    res.json({ settings })
+  } catch (error) {
+    console.error("Bot settings update error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 

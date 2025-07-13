@@ -1,212 +1,168 @@
 const express = require("express")
-const { supabase } = require("../config/database")
-const { getGuild } = require("../config/discord")
-const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
-
 const router = express.Router()
+const { supabase } = require("../config/database")
+const { authenticateApiKey } = require("../middleware/auth")
+const { getGuild, getGuildMember } = require("../config/discord")
 
-// Get roles for a guild
-router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
+// Get roles
+router.get("/", authenticateApiKey, async (req, res) => {
   try {
-    const { data: roles, error } = await supabase
-      .from("roles")
-      .select("*")
-      .eq("guild_id", req.params.guildId)
-      .order("position", { ascending: false })
+    const { guild_id } = req.query
 
-    if (error) {
-      throw error
+    let query = supabase.from("roles").select("*").order("name")
+
+    if (guild_id) {
+      query = query.eq("guild_id", guild_id)
     }
 
-    res.json(roles)
+    const { data: roles, error } = await query
+
+    if (error) {
+      console.error("Error fetching roles:", error)
+      return res.status(500).json({ error: "Failed to fetch roles" })
+    }
+
+    res.json({ roles })
   } catch (error) {
-    console.error("Get roles error:", error)
-    res.status(500).json({ error: "Failed to get roles" })
+    console.error("Roles fetch error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
-// Sync roles with Discord
-router.post("/:guildId/sync", authenticateApiKey, requireGuildAccess, async (req, res) => {
+// Sync Discord roles
+router.post("/sync", authenticateApiKey, async (req, res) => {
   try {
-    const guild = await getGuild(req.params.guildId)
+    const { guild_id } = req.body
+
+    if (!guild_id) {
+      return res.status(400).json({ error: "Guild ID is required" })
+    }
+
+    const guild = await getGuild(guild_id)
     if (!guild) {
-      return res.status(404).json({ error: "Guild not found on Discord" })
+      return res.status(404).json({ error: "Guild not found" })
     }
 
-    const discordRoles = await guild.roles.fetch()
-    const rolesToSync = []
+    const discordRoles = guild.roles.cache
+    const results = []
 
-    discordRoles.forEach((role) => {
-      if (role.name !== "@everyone") {
-        rolesToSync.push({
-          guild_id: req.params.guildId,
-          role_id: role.id,
-          name: role.name,
-          color: role.color.toString(16).padStart(6, "0"),
-          position: role.position,
-          permissions: role.permissions.bitfield.toString(),
-          mentionable: role.mentionable,
-          hoist: role.hoist,
-        })
+    for (const [roleId, role] of discordRoles) {
+      if (role.name === "@everyone") continue // Skip @everyone role
+
+      try {
+        const { data, error } = await supabase
+          .from("roles")
+          .upsert({
+            role_id: roleId,
+            guild_id: guild_id,
+            name: role.name,
+            color: role.color,
+            permissions: role.permissions.bitfield.toString(),
+          })
+          .select()
+
+        if (error) {
+          console.error(`Role sync error for ${role.name}:`, error)
+          results.push({ name: role.name, status: "error", error: error.message })
+        } else {
+          results.push({ name: role.name, status: "success" })
+        }
+      } catch (roleError) {
+        console.error(`Role sync error for ${role.name}:`, roleError)
+        results.push({ name: role.name, status: "error", error: roleError.message })
       }
-    })
-
-    // Delete existing roles for this guild
-    await supabase.from("roles").delete().eq("guild_id", req.params.guildId)
-
-    // Insert new roles
-    const { data: syncedRoles, error } = await supabase.from("roles").insert(rolesToSync).select()
-
-    if (error) {
-      throw error
     }
 
-    res.json({
-      success: true,
-      synced_count: syncedRoles.length,
-      roles: syncedRoles,
-    })
+    res.json({ results, synced: results.filter((r) => r.status === "success").length })
   } catch (error) {
-    console.error("Sync roles error:", error)
-    res.status(500).json({ error: "Failed to sync roles" })
+    console.error("Role sync error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
 // Assign role to user
-router.post("/:guildId/assign", authenticateApiKey, requireGuildAccess, async (req, res) => {
-  const { user_id, role_id } = req.body
-
-  if (!user_id || !role_id) {
-    return res.status(400).json({ error: "user_id and role_id are required" })
-  }
-
+router.post("/assign", authenticateApiKey, async (req, res) => {
   try {
-    const guild = await getGuild(req.params.guildId)
+    const { guild_id, user_id, role_id, assigned_by } = req.body
+
+    if (!guild_id || !user_id || !role_id) {
+      return res.status(400).json({
+        error: "Guild ID, user ID, and role ID are required",
+      })
+    }
+
+    const guild = await getGuild(guild_id)
     if (!guild) {
-      return res.status(404).json({ error: "Guild not found on Discord" })
+      return res.status(404).json({ error: "Guild not found" })
     }
 
-    const member = await guild.members.fetch(user_id)
+    const member = await getGuildMember(guild_id, user_id)
     if (!member) {
-      return res.status(404).json({ error: "User not found in guild" })
+      return res.status(404).json({ error: "Member not found" })
     }
 
-    const role = await guild.roles.fetch(role_id)
-    if (!role) {
-      return res.status(404).json({ error: "Role not found" })
-    }
+    try {
+      await member.roles.add(role_id)
 
-    await member.roles.add(role, "Role assigned via dashboard")
-
-    // Log the role assignment
-    const { data: log, error: logError } = await supabase
-      .from("role_assignments")
-      .insert({
-        guild_id: req.params.guildId,
+      // Log role assignment
+      await supabase.from("user_roles").insert({
         user_id,
         role_id,
-        assigned_by: req.user.discord_id,
-        action: "assign",
+        assigned_by: assigned_by || "system",
       })
-      .select()
-      .single()
 
-    if (logError) {
-      console.error("Role assignment log error:", logError)
+      res.json({ success: true, message: "Role assigned successfully" })
+    } catch (discordError) {
+      console.error("Discord role assignment error:", discordError)
+      res.status(500).json({
+        error: "Failed to assign role in Discord",
+        details: discordError.message,
+      })
     }
-
-    res.json({
-      success: true,
-      message: "Role assigned successfully",
-      log,
-    })
   } catch (error) {
-    console.error("Assign role error:", error)
-    res.status(500).json({ error: "Failed to assign role" })
+    console.error("Role assignment error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
 // Remove role from user
-router.post("/:guildId/remove", authenticateApiKey, requireGuildAccess, async (req, res) => {
-  const { user_id, role_id } = req.body
-
-  if (!user_id || !role_id) {
-    return res.status(400).json({ error: "user_id and role_id are required" })
-  }
-
+router.post("/remove", authenticateApiKey, async (req, res) => {
   try {
-    const guild = await getGuild(req.params.guildId)
-    if (!guild) {
-      return res.status(404).json({ error: "Guild not found on Discord" })
-    }
+    const { guild_id, user_id, role_id } = req.body
 
-    const member = await guild.members.fetch(user_id)
-    if (!member) {
-      return res.status(404).json({ error: "User not found in guild" })
-    }
-
-    const role = await guild.roles.fetch(role_id)
-    if (!role) {
-      return res.status(404).json({ error: "Role not found" })
-    }
-
-    await member.roles.remove(role, "Role removed via dashboard")
-
-    // Log the role removal
-    const { data: log, error: logError } = await supabase
-      .from("role_assignments")
-      .insert({
-        guild_id: req.params.guildId,
-        user_id,
-        role_id,
-        assigned_by: req.user.discord_id,
-        action: "remove",
+    if (!guild_id || !user_id || !role_id) {
+      return res.status(400).json({
+        error: "Guild ID, user ID, and role ID are required",
       })
-      .select()
-      .single()
-
-    if (logError) {
-      console.error("Role removal log error:", logError)
     }
 
-    res.json({
-      success: true,
-      message: "Role removed successfully",
-      log,
-    })
+    const guild = await getGuild(guild_id)
+    if (!guild) {
+      return res.status(404).json({ error: "Guild not found" })
+    }
+
+    const member = await getGuildMember(guild_id, user_id)
+    if (!member) {
+      return res.status(404).json({ error: "Member not found" })
+    }
+
+    try {
+      await member.roles.remove(role_id)
+
+      // Remove from user_roles table
+      await supabase.from("user_roles").delete().eq("user_id", user_id).eq("role_id", role_id)
+
+      res.json({ success: true, message: "Role removed successfully" })
+    } catch (discordError) {
+      console.error("Discord role removal error:", discordError)
+      res.status(500).json({
+        error: "Failed to remove role in Discord",
+        details: discordError.message,
+      })
+    }
   } catch (error) {
-    console.error("Remove role error:", error)
-    res.status(500).json({ error: "Failed to remove role" })
-  }
-})
-
-// Get role assignment history
-router.get("/:guildId/history", authenticateApiKey, requireGuildAccess, async (req, res) => {
-  const { user_id, role_id, page = 1, limit = 50 } = req.query
-
-  try {
-    let query = supabase.from("role_assignments").select("*").eq("guild_id", req.params.guildId)
-
-    if (user_id) {
-      query = query.eq("user_id", user_id)
-    }
-
-    if (role_id) {
-      query = query.eq("role_id", role_id)
-    }
-
-    const { data: history, error } = await query
-      .order("created_at", { ascending: false })
-      .range((page - 1) * limit, page * limit - 1)
-
-    if (error) {
-      throw error
-    }
-
-    res.json(history)
-  } catch (error) {
-    console.error("Get role history error:", error)
-    res.status(500).json({ error: "Failed to get role assignment history" })
+    console.error("Role removal error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 

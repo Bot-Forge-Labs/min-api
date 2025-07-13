@@ -1,146 +1,124 @@
 const express = require("express")
-const { supabase } = require("../config/database")
-const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
-
 const router = express.Router()
+const { supabase } = require("../config/database")
+const { authenticateApiKey } = require("../middleware/auth")
 
-// Get commands for a guild
-router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
+// Get all commands
+router.get("/", authenticateApiKey, async (req, res) => {
   try {
-    const { data: commands, error } = await supabase
-      .from("commands")
-      .select("*")
-      .eq("guild_id", req.params.guildId)
-      .order("name")
+    const { data: commands, error } = await supabase.from("commands").select("*").order("name")
 
     if (error) {
-      throw error
+      console.error("Error fetching commands:", error)
+      return res.status(500).json({ error: "Failed to fetch commands" })
     }
 
-    res.json(commands)
+    res.json({ commands })
   } catch (error) {
-    console.error("Get commands error:", error)
-    res.status(500).json({ error: "Failed to get commands" })
+    console.error("Commands fetch error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
-// Get command usage statistics
-router.get("/:guildId/stats", authenticateApiKey, requireGuildAccess, async (req, res) => {
+// Sync commands from bot
+router.post("/sync", authenticateApiKey, async (req, res) => {
   try {
-    const { data: stats, error } = await supabase
-      .from("command_usage")
-      .select(`
-        command_name,
-        count(*) as usage_count,
-        max(used_at) as last_used
-      `)
-      .eq("guild_id", req.params.guildId)
-      .gte("used_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()) // Last 30 days
-      .group("command_name")
-      .order("usage_count", { ascending: false })
+    const { commands } = req.body
 
-    if (error) {
-      throw error
+    if (!Array.isArray(commands)) {
+      return res.status(400).json({ error: "Commands array is required" })
     }
 
-    res.json(stats)
+    const results = []
+
+    for (const command of commands) {
+      try {
+        const { data, error } = await supabase
+          .from("commands")
+          .upsert({
+            name: command.name,
+            description: command.description,
+            category: command.category || "general",
+            usage_count: 0,
+            is_enabled: true,
+            cooldown: command.cooldown || 0,
+            permissions: command.permissions || [],
+            type: command.type || "slash",
+          })
+          .select()
+
+        if (error) {
+          console.error(`Command sync error for ${command.name}:`, error)
+          results.push({ name: command.name, status: "error", error: error.message })
+        } else {
+          results.push({ name: command.name, status: "success" })
+        }
+      } catch (cmdError) {
+        console.error(`Command sync error for ${command.name}:`, cmdError)
+        results.push({ name: command.name, status: "error", error: cmdError.message })
+      }
+    }
+
+    res.json({ results })
   } catch (error) {
-    console.error("Get command stats error:", error)
-    res.status(500).json({ error: "Failed to get command statistics" })
+    console.error("Command sync error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
-// Toggle command enabled/disabled
-router.patch("/:guildId/:commandName/toggle", authenticateApiKey, requireGuildAccess, async (req, res) => {
+// Update command usage
+router.post("/:name/usage", authenticateApiKey, async (req, res) => {
   try {
-    // First check if command exists
-    const { data: existingCommand, error: fetchError } = await supabase
-      .from("commands")
-      .select("*")
-      .eq("guild_id", req.params.guildId)
-      .eq("name", req.params.commandName)
-      .single()
+    const { name } = req.params
+    const { guild_id, user_id } = req.body
 
-    if (fetchError && fetchError.code !== "PGRST116") {
-      throw fetchError
-    }
-
-    let command
-    if (!existingCommand) {
-      // Create command if it doesn't exist
-      const { data: newCommand, error: createError } = await supabase
-        .from("commands")
-        .insert({
-          guild_id: req.params.guildId,
-          name: req.params.commandName,
-          enabled: false,
-          description: `${req.params.commandName} command`,
-        })
-        .select()
-        .single()
-
-      if (createError) {
-        throw createError
-      }
-      command = newCommand
-    } else {
-      // Toggle existing command
-      const { data: updatedCommand, error: updateError } = await supabase
-        .from("commands")
-        .update({ enabled: !existingCommand.enabled })
-        .eq("guild_id", req.params.guildId)
-        .eq("name", req.params.commandName)
-        .select()
-        .single()
-
-      if (updateError) {
-        throw updateError
-      }
-      command = updatedCommand
-    }
-
-    res.json({
-      success: true,
-      command,
+    // Update usage count
+    const { error } = await supabase.rpc("increment_command_usage", {
+      command_name: name,
     })
+
+    if (error) {
+      console.error("Error updating command usage:", error)
+      return res.status(500).json({ error: "Failed to update usage" })
+    }
+
+    // Log command usage
+    await supabase.from("command_usage_logs").insert({
+      command_name: name,
+      guild_id,
+      user_id,
+      used_at: new Date().toISOString(),
+    })
+
+    res.json({ message: "Usage updated successfully" })
   } catch (error) {
-    console.error("Toggle command error:", error)
-    res.status(500).json({ error: "Failed to toggle command" })
+    console.error("Command usage error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
-// Log command usage
-router.post("/:guildId/usage", async (req, res) => {
-  const { command_name, user_id, channel_id } = req.body
-
-  if (!command_name || !user_id) {
-    return res.status(400).json({ error: "command_name and user_id are required" })
-  }
-
+// Toggle command enabled status
+router.patch("/:name/toggle", authenticateApiKey, async (req, res) => {
   try {
-    const { data: usage, error } = await supabase
-      .from("command_usage")
-      .insert({
-        guild_id: req.params.guildId,
-        command_name,
-        user_id,
-        channel_id,
-        used_at: new Date().toISOString(),
-      })
+    const { name } = req.params
+    const { is_enabled } = req.body
+
+    const { data: command, error } = await supabase
+      .from("commands")
+      .update({ is_enabled })
+      .eq("name", name)
       .select()
       .single()
 
     if (error) {
-      throw error
+      console.error("Error toggling command:", error)
+      return res.status(500).json({ error: "Failed to toggle command" })
     }
 
-    res.status(201).json({
-      success: true,
-      usage,
-    })
+    res.json({ command })
   } catch (error) {
-    console.error("Log command usage error:", error)
-    res.status(500).json({ error: "Failed to log command usage" })
+    console.error("Command toggle error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 

@@ -164,6 +164,102 @@ router.post("/", authenticateApiKey, requireGuildAccess, async (req, res) => {
   }
 })
 
+// Create reaction role embed
+router.post("/embed", authenticateApiKey, async (req, res) => {
+  try {
+    const { guild_id, channel_id, title, description, color, footer_text, footer_icon, author_id, roles } = req.body
+
+    if (!guild_id || !channel_id || !title || !author_id || !Array.isArray(roles)) {
+      return res.status(400).json({
+        error: "Guild ID, channel ID, title, author ID, and roles array are required",
+      })
+    }
+
+    // Create embed in database
+    const { data: embedData, error: embedError } = await supabase
+      .from("reaction_role_embeds")
+      .insert({
+        guild_id,
+        channel_id,
+        title,
+        description: description || null,
+        color: color || "#0099ff",
+        footer_text: footer_text || null,
+        footer_icon: footer_icon || null,
+        author_id,
+        message_id: null, // Will be updated after sending
+      })
+      .select()
+      .single()
+
+    if (embedError) {
+      console.error("Error creating reaction role embed:", embedError)
+      return res.status(500).json({ error: "Failed to create embed" })
+    }
+
+    // Create Discord embed
+    const embed = createEmbed(title, description || "React to get roles!", color)
+
+    if (footer_text) {
+      embed.setFooter({
+        text: footer_text,
+        iconURL: footer_icon || undefined,
+      })
+    }
+
+    // Add role information to embed
+    const roleFields = roles.map((role, index) => ({
+      name: `${role.emoji} ${role.name}`,
+      value: role.description || "Click to get this role",
+      inline: true,
+    }))
+
+    embed.addFields(roleFields)
+
+    try {
+      // Send embed to Discord
+      const message = await sendMessage(channel_id, { embeds: [embed] })
+
+      if (message) {
+        // Update embed with message ID
+        await supabase.from("reaction_role_embeds").update({ message_id: message.id }).eq("id", embedData.id)
+
+        // Add reactions and create reaction role entries
+        for (const role of roles) {
+          try {
+            await message.react(role.emoji)
+
+            // Create reaction role entry
+            await supabase.from("reaction_roles").insert({
+              guild_id,
+              channel_id,
+              message_id: message.id,
+              emoji: role.emoji,
+              role_id: role.role_id,
+            })
+          } catch (reactionError) {
+            console.error(`Error adding reaction ${role.emoji}:`, reactionError)
+          }
+        }
+
+        res.status(201).json({
+          embed: embedData,
+          message_id: message.id,
+          success: true,
+        })
+      } else {
+        res.status(500).json({ error: "Failed to send message to Discord" })
+      }
+    } catch (discordError) {
+      console.error("Discord embed error:", discordError)
+      res.status(500).json({ error: "Failed to send embed to Discord" })
+    }
+  } catch (error) {
+    console.error("Reaction role embed creation error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+
 // Create reaction role
 router.post("/single", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
@@ -364,29 +460,21 @@ router.put("/:reactionRoleId/description", authenticateApiKey, async (req, res) 
 })
 
 // Delete reaction role
-router.delete("/:guildId/:reactionRoleId", authenticateApiKey, requireGuildAccess, async (req, res) => {
+router.delete("/:id", authenticateApiKey, async (req, res) => {
   try {
-    // Delete mappings first
-    await supabase.from("reaction_role_mappings").delete().eq("reaction_role_id", req.params.reactionRoleId)
+    const { id } = req.params
 
-    // Delete reaction role
-    const { error } = await supabase
-      .from("reaction_roles")
-      .delete()
-      .eq("id", req.params.reactionRoleId)
-      .eq("guild_id", req.params.guildId)
+    const { error } = await supabase.from("reaction_roles").delete().eq("id", id)
 
     if (error) {
-      throw error
+      console.error("Error deleting reaction role:", error)
+      return res.status(500).json({ error: "Failed to delete reaction role" })
     }
 
-    res.json({
-      success: true,
-      message: "Reaction role setup deleted successfully",
-    })
+    res.json({ message: "Reaction role deleted successfully" })
   } catch (error) {
-    console.error("Delete reaction role error:", error)
-    res.status(500).json({ error: "Failed to delete reaction role setup" })
+    console.error("Reaction role deletion error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 

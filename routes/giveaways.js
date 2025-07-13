@@ -1,53 +1,32 @@
 const express = require("express")
 const { supabase } = require("../config/database")
-const { sendMessage, createEmbed } = require("../config/discord")
-const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
+const { client, sendMessage, createEmbed } = require("../config/discord")
+const { authenticateApiKey } = require("../middleware/auth")
 
 const router = express.Router()
 
 // Get all giveaways
 router.get("/", authenticateApiKey, async (req, res) => {
   try {
-    const { guild_id, status, page = 1, limit = 20 } = req.query
-    const offset = (page - 1) * limit
-
-    let query = supabase.from("giveaways").select("*", { count: "exact" })
-
-    if (guild_id) {
-      query = query.eq("guild_id", guild_id)
-    }
-
-    if (status) {
-      query = query.eq("status", status)
-    }
-
-    const {
-      data: giveaways,
-      error,
-      count,
-    } = await query.order("created_at", { ascending: false }).range(offset, offset + limit - 1)
+    const { data: giveaways, error } = await supabase
+      .from("giveaways")
+      .select("*")
+      .order("created_at", { ascending: false })
 
     if (error) {
-      throw error
+      console.error("Error fetching giveaways:", error)
+      return res.status(500).json({ error: "Failed to fetch giveaways" })
     }
 
-    res.json({
-      giveaways,
-      pagination: {
-        page: Number.parseInt(page),
-        limit: Number.parseInt(limit),
-        total: count,
-        pages: Math.ceil(count / limit),
-      },
-    })
+    res.json({ giveaways })
   } catch (error) {
-    console.error("Get giveaways error:", error)
-    res.status(500).json({ error: "Failed to fetch giveaways" })
+    console.error("Giveaways fetch error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
 // Get giveaways for a guild
-router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
+router.get("/:guildId", authenticateApiKey, async (req, res) => {
   const { status = "all" } = req.query
 
   try {
@@ -71,141 +50,118 @@ router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res)
 })
 
 // Create new giveaway
-router.post("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
-  const { title, description, prize, duration_hours, channel_id, winner_count = 1, requirements } = req.body
-
-  if (!title || !prize || !duration_hours || !channel_id) {
-    return res.status(400).json({ error: "title, prize, duration_hours, and channel_id are required" })
-  }
-
+router.post("/", authenticateApiKey, async (req, res) => {
   try {
-    const endTime = new Date(Date.now() + duration_hours * 60 * 60 * 1000)
+    const { prize, description, duration_minutes, winners_count, created_by, channel_id } = req.body
+
+    if (!prize || !duration_minutes || !created_by || !channel_id) {
+      return res.status(400).json({
+        error: "Prize, duration, creator, and channel are required",
+      })
+    }
+
+    const startTime = new Date()
+    const endTime = new Date(startTime.getTime() + duration_minutes * 60000)
 
     // Create giveaway in database
     const { data: giveaway, error } = await supabase
       .from("giveaways")
       .insert({
-        guild_id: req.params.guildId,
-        title,
-        description,
         prize,
-        channel_id,
-        created_by: req.user.discord_id,
+        description: description || null,
+        start_time: startTime.toISOString(),
         end_time: endTime.toISOString(),
-        winner_count,
-        requirements: requirements || {},
-        status: "active",
+        winners_count: winners_count || 1,
+        created_by,
+        channel_id,
+        duration_minutes,
+        ended: false,
       })
       .select()
       .single()
 
     if (error) {
-      throw error
+      console.error("Error creating giveaway:", error)
+      return res.status(500).json({ error: "Failed to create giveaway" })
     }
-
-    // Create embed for Discord message
-    const embed = createEmbed(
-      `🎉 ${title}`,
-      `**Prize:** ${prize}\n**Winners:** ${winner_count}\n**Ends:** <t:${Math.floor(endTime.getTime() / 1000)}:R>\n\n${description || "React with 🎉 to enter!"}`,
-      "#ff6b6b",
-    )
 
     // Send giveaway message to Discord
-    const message = await sendMessage(channel_id, { embeds: [embed] })
+    try {
+      const embed = createEmbed(
+        `🎉 GIVEAWAY: ${prize}`,
+        `${description || "No description provided"}\n\n` +
+          `**Winners:** ${winners_count}\n` +
+          `**Ends:** <t:${Math.floor(endTime.getTime() / 1000)}:R>\n\n` +
+          `React with 🎉 to enter!`,
+        "#ff6b6b",
+      )
 
-    if (message) {
-      // Add reaction for entries
-      await message.react("🎉")
+      const message = await sendMessage(channel_id, { embeds: [embed] })
 
-      // Update giveaway with message ID
-      await supabase.from("giveaways").update({ message_id: message.id }).eq("id", giveaway.id)
+      if (message) {
+        await message.react("🎉")
 
-      giveaway.message_id = message.id
+        // Update giveaway with message ID
+        await supabase.from("giveaways").update({ message_id: message.id }).eq("id", giveaway.id)
+      }
+    } catch (discordError) {
+      console.error("Discord giveaway error:", discordError)
     }
 
-    res.status(201).json({
-      success: true,
-      giveaway,
-      message: "Giveaway created successfully",
-    })
+    res.status(201).json({ giveaway })
   } catch (error) {
-    console.error("Create giveaway error:", error)
-    res.status(500).json({ error: "Failed to create giveaway" })
+    console.error("Giveaway creation error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
 // End giveaway early
-router.post("/:guildId/:giveawayId/end", authenticateApiKey, requireGuildAccess, async (req, res) => {
+router.post("/:id/end", authenticateApiKey, async (req, res) => {
   try {
-    const { data: giveaway, error: fetchError } = await supabase
+    const { id } = req.params
+
+    const { data: giveaway, error } = await supabase
       .from("giveaways")
-      .select("*")
-      .eq("id", req.params.giveawayId)
-      .eq("guild_id", req.params.guildId)
-      .single()
-
-    if (fetchError) {
-      return res.status(404).json({ error: "Giveaway not found" })
-    }
-
-    if (giveaway.status !== "active") {
-      return res.status(400).json({ error: "Giveaway is not active" })
-    }
-
-    // Update giveaway status
-    const { data: updatedGiveaway, error: updateError } = await supabase
-      .from("giveaways")
-      .update({
-        status: "ended",
-        end_time: new Date().toISOString(),
-      })
-      .eq("id", req.params.giveawayId)
+      .update({ ended: true })
+      .eq("id", id)
       .select()
       .single()
 
-    if (updateError) {
-      throw updateError
+    if (error) {
+      console.error("Error ending giveaway:", error)
+      return res.status(500).json({ error: "Failed to end giveaway" })
     }
 
     // TODO: Implement winner selection logic here
-    // This would involve fetching reactions from Discord and selecting random winners
 
-    res.json({
-      success: true,
-      giveaway: updatedGiveaway,
-      message: "Giveaway ended successfully",
-    })
+    res.json({ giveaway })
   } catch (error) {
-    console.error("End giveaway error:", error)
-    res.status(500).json({ error: "Failed to end giveaway" })
+    console.error("Giveaway end error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
 // Delete giveaway
-router.delete("/:guildId/:giveawayId", authenticateApiKey, requireGuildAccess, async (req, res) => {
+router.delete("/:id", authenticateApiKey, async (req, res) => {
   try {
-    const { error } = await supabase
-      .from("giveaways")
-      .delete()
-      .eq("id", req.params.giveawayId)
-      .eq("guild_id", req.params.guildId)
+    const { id } = req.params
+
+    const { error } = await supabase.from("giveaways").delete().eq("id", id)
 
     if (error) {
-      throw error
+      console.error("Error deleting giveaway:", error)
+      return res.status(500).json({ error: "Failed to delete giveaway" })
     }
 
-    res.json({
-      success: true,
-      message: "Giveaway deleted successfully",
-    })
+    res.json({ message: "Giveaway deleted successfully" })
   } catch (error) {
-    console.error("Delete giveaway error:", error)
-    res.status(500).json({ error: "Failed to delete giveaway" })
+    console.error("Giveaway deletion error:", error)
+    res.status(500).json({ error: "Internal server error" })
   }
 })
 
 // Get giveaway entries
-router.get("/:guildId/:giveawayId/entries", authenticateApiKey, requireGuildAccess, async (req, res) => {
+router.get("/:guildId/:giveawayId/entries", authenticateApiKey, async (req, res) => {
   try {
     const { data: entries, error } = await supabase
       .from("giveaway_entries")
