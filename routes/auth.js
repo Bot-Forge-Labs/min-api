@@ -1,134 +1,150 @@
-const express = require("express")
-const axios = require("axios")
-const supabase = require("../config/database")
+const express = require('express')
+const axios = require('axios')
+const { supabase } = require('../config/database')
+const { generateToken } = require('../middleware/auth')
+const { clientId, clientSecret } = require('../config/discord')
+
 const router = express.Router()
 
-// Discord OAuth callback
-router.post("/discord/callback", async (req, res) => {
+// Discord OAuth2 callback
+router.post('/discord/callback', async (req, res) => {
   const { code } = req.body
 
   if (!code) {
-    return res.status(400).json({ error: "Authorization code required" })
+    return res.status(400).json({ error: 'Authorization code required' })
   }
 
   try {
     // Exchange code for access token
-    const tokenResponse = await axios.post(
-      "https://discord.com/api/oauth2/token",
-      {
-        client_id: process.env.DISCORD_CLIENT_ID,
-        client_secret: process.env.DISCORD_CLIENT_SECRET,
-        code,
-        grant_type: "authorization_code",
-        redirect_uri: process.env.DISCORD_REDIRECT_URI,
-      },
-      {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-      },
-    )
+    const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', {
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: 'authorization_code',
+      code: code,
+      redirect_uri: process.env.DISCORD_REDIRECT_URI || 'http://localhost:3000/auth/callback'
+    }, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    })
 
     const { access_token } = tokenResponse.data
 
     // Get user info from Discord
-    const userResponse = await axios.get("https://discord.com/api/users/@me", {
+    const userResponse = await axios.get('https://discord.com/api/users/@me', {
       headers: {
-        Authorization: `Bearer ${access_token}`,
-      },
+        Authorization: `Bearer ${access_token}`
+      }
     })
 
     const discordUser = userResponse.data
 
-    // Create or update user in Supabase
-    const { data: user, error: authError } = await supabase.auth.signInWithOAuth({
-      provider: "discord",
-      options: {
-        redirectTo: process.env.FRONTEND_URL,
-      },
-    })
+    // Check if user exists in database
+    let { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('discord_id', discordUser.id)
+      .single()
 
-    if (authError) {
-      throw authError
+    if (error && error.code !== 'PGRST116') {
+      throw error
     }
 
-    // Update user profile
-    const { error: profileError } = await supabase.from("user_profiles").upsert({
-      user_id: discordUser.id,
-      username: `${discordUser.username}#${discordUser.discriminator}`,
-      avatar: discordUser.avatar,
-      email: discordUser.email,
-      discord_access_token: access_token,
-      updated_at: new Date().toISOString(),
-    })
+    // Create or update user
+    if (!user) {
+      const { data: newUser, error: createError } = await supabase
+        .from('users')
+        .insert({
+          discord_id: discordUser.id,
+          username: discordUser.username,
+          discriminator: discordUser.discriminator,
+          avatar: discordUser.avatar,
+          email: discordUser.email,
+          is_admin: false
+        })
+        .select()
+        .single()
 
-    if (profileError) {
-      console.error("Profile update error:", profileError)
+      if (createError) throw createError
+      user = newUser
+    } else {
+      // Update existing user
+      const { data: updatedUser, error: updateError } = await supabase
+        .from('users')
+        .update({
+          username: discordUser.username,
+          discriminator: discordUser.discriminator,
+          avatar: discordUser.avatar,
+          email: discordUser.email,
+          last_login: new Date().toISOString()
+        })
+        .eq('discord_id', discordUser.id)
+        .select()
+        .single()
+
+      if (updateError) throw updateError
+      user = updatedUser
     }
+
+    // Generate JWT token
+    const token = generateToken(user)
 
     res.json({
       success: true,
+      token,
       user: {
-        id: discordUser.id,
-        username: discordUser.username,
-        avatar: discordUser.avatar,
-        email: discordUser.email,
-      },
-      access_token,
+        id: user.id,
+        discord_id: user.discord_id,
+        username: user.username,
+        avatar: user.avatar,
+        is_admin: user.is_admin
+      }
     })
+
   } catch (error) {
-    console.error("Discord OAuth error:", error)
-    res.status(500).json({ error: "Authentication failed" })
+    console.error('Discord OAuth error:', error.response?.data || error.message)
+    res.status(500).json({ 
+      error: 'Authentication failed',
+      details: error.response?.data?.error_description || error.message
+    })
   }
 })
 
-// Get current user
-router.get("/me", async (req, res) => {
-  const authHeader = req.headers["authorization"]
-  const token = authHeader && authHeader.split(" ")[1]
+// Get Discord OAuth URL
+router.get('/discord/url', (req, res) => {
+  const redirectUri = process.env.DISCORD_REDIRECT_URI || 'http://localhost:3000/auth/callback'
+  const scope = 'identify email guilds'
+  
+  const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}`
+  
+  res.json({ url: authUrl })
+})
 
-  if (!token) {
-    return res.status(401).json({ error: "Access token required" })
+// Refresh token
+router.post('/refresh', async (req, res) => {
+  const { refresh_token } = req.body
+
+  if (!refresh_token) {
+    return res.status(400).json({ error: 'Refresh token required' })
   }
 
   try {
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser(token)
-
-    if (error || !user) {
-      return res.status(403).json({ error: "Invalid token" })
-    }
-
-    const { data: profile } = await supabase.from("user_profiles").select("*").eq("user_id", user.id).single()
-
-    res.json({
-      user: {
-        ...user,
-        profile,
-      },
+    const response = await axios.post('https://discord.com/api/oauth2/token', {
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: 'refresh_token',
+      refresh_token: refresh_token
+    }, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
     })
+
+    res.json(response.data)
   } catch (error) {
-    console.error("Get user error:", error)
-    res.status(500).json({ error: "Failed to get user" })
+    console.error('Token refresh error:', error.response?.data || error.message)
+    res.status(500).json({ error: 'Failed to refresh token' })
   }
-})
-
-// Logout
-router.post("/logout", async (req, res) => {
-  const authHeader = req.headers["authorization"]
-  const token = authHeader && authHeader.split(" ")[1]
-
-  if (token) {
-    try {
-      await supabase.auth.signOut()
-    } catch (error) {
-      console.error("Logout error:", error)
-    }
-  }
-
-  res.json({ success: true })
 })
 
 module.exports = router

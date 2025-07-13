@@ -1,200 +1,160 @@
-const express = require("express")
-const supabase = require("../config/database")
-const { client } = require("../config/discord")
-const { authenticateToken } = require("../middleware/auth")
+const express = require('express')
+const { supabase } = require('../config/database')
+const { authenticateToken, requireAdmin } = require('../middleware/auth')
+
 const router = express.Router()
 
-// Get all users with filtering
-router.get("/", authenticateToken, async (req, res) => {
+// Get all users (admin only)
+router.get('/', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { search, status, guild_id, page = 1, limit = 20 } = req.query
-    const offset = (page - 1) * limit
-
-    let query = supabase
-      .from("user_profiles")
-      .select(`
-        *,
-        user_guild_memberships!inner(
-          guild_id,
-          joined_at,
-          roles,
-          guilds(name, icon)
-        )
-      `)
-      .range(offset, offset + limit - 1)
-
-    if (search) {
-      query = query.ilike("username", `%${search}%`)
-    }
-
-    if (status) {
-      query = query.eq("status", status)
-    }
-
-    if (guild_id) {
-      query = query.eq("user_guild_memberships.guild_id", guild_id)
-    }
-
-    const { data: users, error } = await query
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: false })
 
     if (error) throw error
 
-    // Enhance with Discord data
-    const enhancedUsers = await Promise.all(
-      users.map(async (user) => {
-        try {
-          const discordUser = await client.users.fetch(user.user_id)
-          return {
-            ...user,
-            discord: {
-              username: discordUser.username,
-              discriminator: discordUser.discriminator,
-              avatar: discordUser.displayAvatarURL(),
-              banner: discordUser.bannerURL(),
-              createdAt: discordUser.createdAt,
-            },
-          }
-        } catch (error) {
-          return user
-        }
-      }),
-    )
-
     res.json({
-      users: enhancedUsers,
-      pagination: {
-        page: Number.parseInt(page),
-        limit: Number.parseInt(limit),
-        total: users.length,
-      },
+      success: true,
+      users: users.map(user => ({
+        id: user.id,
+        discord_id: user.discord_id,
+        username: user.username,
+        discriminator: user.discriminator,
+        avatar: user.avatar,
+        is_admin: user.is_admin,
+        created_at: user.created_at,
+        last_login: user.last_login
+      }))
     })
   } catch (error) {
-    console.error("Get users error:", error)
-    res.status(500).json({ error: "Failed to fetch users" })
+    console.error('Get users error:', error)
+    res.status(500).json({ error: 'Failed to fetch users' })
   }
+})
+
+// Get current user
+router.get('/me', authenticateToken, async (req, res) => {
+  res.json({
+    success: true,
+    user: {
+      id: req.user.id,
+      discord_id: req.user.discord_id,
+      username: req.user.username,
+      discriminator: req.user.discriminator,
+      avatar: req.user.avatar,
+      is_admin: req.user.is_admin,
+      created_at: req.user.created_at,
+      last_login: req.user.last_login
+    }
+  })
 })
 
 // Get user by ID
-router.get("/:userId", authenticateToken, async (req, res) => {
-  try {
-    const { userId } = req.params
+router.get('/:userId', authenticateToken, async (req, res) => {
+  const { userId } = req.params
 
+  try {
     const { data: user, error } = await supabase
-      .from("user_profiles")
-      .select(`
-        *,
-        user_guild_memberships(
-          guild_id,
-          joined_at,
-          roles,
-          message_count,
-          guilds(name, icon)
-        )
-      `)
-      .eq("user_id", userId)
+      .from('users')
+      .select('*')
+      .eq('discord_id', userId)
       .single()
 
-    if (error) throw error
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" })
-    }
-
-    // Get Discord user data
-    try {
-      const discordUser = await client.users.fetch(userId)
-      user.discord = {
-        username: discordUser.username,
-        discriminator: discordUser.discriminator,
-        avatar: discordUser.displayAvatarURL(),
-        banner: discordUser.bannerURL(),
-        createdAt: discordUser.createdAt,
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({ error: 'User not found' })
       }
-    } catch (discordError) {
-      console.error("Discord user fetch error:", discordError)
+      throw error
     }
 
-    res.json({ user })
+    // Only return public info unless admin or self
+    const isOwner = req.user.discord_id === userId
+    const isAdmin = req.user.is_admin
+
+    if (!isOwner && !isAdmin) {
+      return res.json({
+        success: true,
+        user: {
+          discord_id: user.discord_id,
+          username: user.username,
+          discriminator: user.discriminator,
+          avatar: user.avatar,
+          created_at: user.created_at
+        }
+      })
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        discord_id: user.discord_id,
+        username: user.username,
+        discriminator: user.discriminator,
+        avatar: user.avatar,
+        email: user.email,
+        is_admin: user.is_admin,
+        created_at: user.created_at,
+        last_login: user.last_login
+      }
+    })
   } catch (error) {
-    console.error("Get user error:", error)
-    res.status(500).json({ error: "Failed to fetch user" })
+    console.error('Get user error:', error)
+    res.status(500).json({ error: 'Failed to fetch user' })
   }
 })
 
-// Update user profile
-router.put("/:userId", authenticateToken, async (req, res) => {
+// Update user (admin only)
+router.put('/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  const { userId } = req.params
+  const { is_admin } = req.body
+
   try {
-    const { userId } = req.params
-    const updates = req.body
-
-    // Validate user can update this profile
-    if (req.user.id !== userId) {
-      const { data: profile } = await supabase
-        .from("user_profiles")
-        .select("is_admin")
-        .eq("user_id", req.user.id)
-        .single()
-
-      if (!profile?.is_admin) {
-        return res.status(403).json({ error: "Unauthorized" })
-      }
-    }
-
     const { data: user, error } = await supabase
-      .from("user_profiles")
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", userId)
+      .from('users')
+      .update({ is_admin })
+      .eq('discord_id', userId)
       .select()
       .single()
 
     if (error) throw error
 
-    res.json({ user })
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      user: {
+        id: user.id,
+        discord_id: user.discord_id,
+        username: user.username,
+        is_admin: user.is_admin
+      }
+    })
   } catch (error) {
-    console.error("Update user error:", error)
-    res.status(500).json({ error: "Failed to update user" })
+    console.error('Update user error:', error)
+    res.status(500).json({ error: 'Failed to update user' })
   }
 })
 
-// Get user activity
-router.get("/:userId/activity", authenticateToken, async (req, res) => {
+// Delete user (admin only)
+router.delete('/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  const { userId } = req.params
+
   try {
-    const { userId } = req.params
-    const { days = 30 } = req.query
+    const { error } = await supabase
+      .from('users')
+      .delete()
+      .eq('discord_id', userId)
 
-    const startDate = new Date()
-    startDate.setDate(startDate.getDate() - days)
-
-    // Get message activity
-    const { data: messageActivity, error: messageError } = await supabase
-      .from("user_message_stats")
-      .select("*")
-      .eq("user_id", userId)
-      .gte("date", startDate.toISOString().split("T")[0])
-      .order("date", { ascending: true })
-
-    if (messageError) throw messageError
-
-    // Get moderation history
-    const { data: moderationHistory, error: modError } = await supabase
-      .from("moderation_logs")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(10)
-
-    if (modError) throw modError
+    if (error) throw error
 
     res.json({
-      messageActivity: messageActivity || [],
-      moderationHistory: moderationHistory || [],
+      success: true,
+      message: 'User deleted successfully'
     })
   } catch (error) {
-    console.error("Get user activity error:", error)
-    res.status(500).json({ error: "Failed to fetch user activity" })
+    console.error('Delete user error:', error)
+    res.status(500).json({ error: 'Failed to delete user' })
   }
 })
 
