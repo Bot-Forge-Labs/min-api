@@ -1,168 +1,104 @@
-const express = require('express')
-const axios = require('axios')
-const { supabase } = require('../config/database')
-const { generateToken, authenticateToken } = require('../middleware/auth')
+const jwt = require("jsonwebtoken")
+const { supabase } = require("../config/database")
 
-const router = express.Router()
+// JWT secret from environment
+const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-this"
 
-// Discord OAuth URL
-router.get('/discord/url', (req, res) => {
-  const clientId = process.env.DISCORD_CLIENT_ID
-  const redirectUri = process.env.DISCORD_REDIRECT_URI || `${process.env.FRONTEND_URL}/auth/callback`
-  
-  if (!clientId) {
-    return res.status(500).json({ error: 'Discord OAuth not configured' })
+// Generate JWT token
+const generateToken = (user) => {
+  return jwt.sign(
+    {
+      id: user.id,
+      discord_id: user.discord_id,
+      username: user.username,
+      is_admin: user.is_admin,
+    },
+    JWT_SECRET,
+    { expiresIn: "7d" },
+  )
+}
+
+// Verify JWT token middleware
+const authenticateToken = async (req, res, next) => {
+  const authHeader = req.headers["authorization"]
+  const token = authHeader && authHeader.split(" ")[1]
+
+  if (!token) {
+    return res.status(401).json({ error: "Access token required" })
   }
 
-  const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=identify%20email%20guilds`
-  
-  res.json({ url: authUrl })
-})
-
-// Discord OAuth callback
-router.post('/discord/callback', async (req, res) => {
   try {
-    const { code } = req.body
+    const decoded = jwt.verify(token, JWT_SECRET)
 
-    if (!code) {
-      return res.status(400).json({ error: 'Authorization code required' })
+    // Get user from database to ensure they still exist
+    const { data: user, error } = await supabase.from("users").select("*").eq("discord_id", decoded.discord_id).single()
+
+    if (error || !user) {
+      return res.status(401).json({ error: "Invalid token or user not found" })
     }
 
-    // Exchange code for access token
-    const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', {
-      client_id: process.env.DISCORD_CLIENT_ID,
-      client_secret: process.env.DISCORD_CLIENT_SECRET,
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: process.env.DISCORD_REDIRECT_URI || `${process.env.FRONTEND_URL}/auth/callback`
-    }, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    })
+    req.user = user
+    next()
+  } catch (error) {
+    console.error("Token verification error:", error)
+    return res.status(403).json({ error: "Invalid or expired token" })
+  }
+}
 
-    const { access_token } = tokenResponse.data
+// Admin only middleware
+const requireAdmin = (req, res, next) => {
+  if (!req.user || !req.user.is_admin) {
+    return res.status(403).json({ error: "Admin access required" })
+  }
+  next()
+}
 
-    // Get user info from Discord
-    const userResponse = await axios.get('https://discord.com/api/users/@me', {
-      headers: {
-        Authorization: `Bearer ${access_token}`
-      }
-    })
+// Guild access middleware
+const requireGuildAccess = async (req, res, next) => {
+  const guildId = req.params.guildId || req.body.guild_id
 
-    const discordUser = userResponse.data
+  if (!guildId) {
+    return res.status(400).json({ error: "Guild ID required" })
+  }
 
-    // Check if user exists in database
-    let { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('discord_id', discordUser.id)
+  try {
+    // Check if user has access to this guild
+    const { data: guild, error } = await supabase.from("guilds").select("*").eq("guild_id", guildId).single()
+
+    if (error || !guild) {
+      return res.status(404).json({ error: "Guild not found" })
+    }
+
+    // Admin users have access to all guilds
+    if (req.user.is_admin) {
+      req.guild = guild
+      return next()
+    }
+
+    // Check if user is a member of this guild
+    const { data: member, error: memberError } = await supabase
+      .from("guild_members")
+      .select("*")
+      .eq("guild_id", guildId)
+      .eq("user_id", req.user.discord_id)
       .single()
 
-    if (error && error.code !== 'PGRST116') {
-      throw error
+    if (memberError || !member) {
+      return res.status(403).json({ error: "Access denied to this guild" })
     }
 
-    // Create user if doesn't exist
-    if (!user) {
-      const { data: newUser, error: createError } = await supabase
-        .from('users')
-        .insert({
-          discord_id: discordUser.id,
-          username: discordUser.username,
-          discriminator: discordUser.discriminator || '0',
-          avatar: discordUser.avatar,
-          email: discordUser.email,
-          is_admin: false
-        })
-        .select()
-        .single()
-
-      if (createError) {
-        throw createError
-      }
-
-      user = newUser
-    } else {
-      // Update user info
-      const { data: updatedUser, error: updateError } = await supabase
-        .from('users')
-        .update({
-          username: discordUser.username,
-          discriminator: discordUser.discriminator || '0',
-          avatar: discordUser.avatar,
-          email: discordUser.email,
-          last_login: new Date().toISOString()
-        })
-        .eq('discord_id', discordUser.id)
-        .select()
-        .single()
-
-      if (updateError) {
-        throw updateError
-      }
-
-      user = updatedUser
-    }
-
-    // Generate JWT token
-    const token = generateToken(user)
-
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user.id,
-        discord_id: user.discord_id,
-        username: user.username,
-        avatar: user.avatar,
-        is_admin: user.is_admin
-      }
-    })
-
+    req.guild = guild
+    req.member = member
+    next()
   } catch (error) {
-    console.error('Discord OAuth error:', error)
-    res.status(500).json({ 
-      error: 'Authentication failed',
-      details: error.response?.data?.error_description || error.message
-    })
+    console.error("Guild access check error:", error)
+    return res.status(500).json({ error: "Failed to verify guild access" })
   }
-})
+}
 
-// Get current user
-router.get('/me', authenticateToken, async (req, res) => {
-  try {
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, discord_id, username, discriminator, avatar, email, is_admin, created_at, last_login')
-      .eq('discord_id', req.user.discord_id)
-      .single()
-
-    if (error) {
-      throw error
-    }
-
-    res.json({ user })
-  } catch (error) {
-    console.error('Get user error:', error)
-    res.status(500).json({ error: 'Failed to get user information' })
-  }
-})
-
-// Logout (client-side token removal)
-router.post('/logout', authenticateToken, (req, res) => {
-  res.json({ success: true, message: 'Logged out successfully' })
-})
-
-// Refresh token
-router.post('/refresh', authenticateToken, async (req, res) => {
-  try {
-    const newToken = generateToken(req.user)
-    res.json({ success: true, token: newToken })
-  } catch (error) {
-    console.error('Token refresh error:', error)
-    res.status(500).json({ error: 'Failed to refresh token' })
-  }
-})
-
-module.exports = router
+module.exports = {
+  generateToken,
+  authenticateToken,
+  requireAdmin,
+  requireGuildAccess,
+}

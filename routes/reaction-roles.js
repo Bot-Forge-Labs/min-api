@@ -1,6 +1,6 @@
 const express = require("express")
 const { supabase } = require("../config/database")
-const { discordAPI, createEmbed } = require("../config/discord")
+const { sendMessage, createEmbed } = require("../config/discord")
 const { client } = require("../config/discord")
 const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
 const router = express.Router()
@@ -38,7 +38,7 @@ router.get("/", authenticateToken, async (req, res) => {
 })
 
 // Get reaction roles by guild
-router.get("/guild/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
   try {
     const { guildId } = req.params
 
@@ -52,7 +52,7 @@ router.get("/guild/:guildId", authenticateToken, requireGuildAccess, async (req,
       throw error
     }
 
-    res.json({ reaction_roles: reactionRoles })
+    res.json(reactionRoles)
   } catch (error) {
     console.error("Get reaction roles error:", error)
     res.status(500).json({ error: "Failed to fetch reaction roles" })
@@ -167,22 +167,15 @@ router.post("/", authenticateToken, requireGuildAccess, async (req, res) => {
 // Create reaction role
 router.post("/single", authenticateToken, requireGuildAccess, async (req, res) => {
   try {
-    const {
-      guild_id,
-      channel_id,
-      message_id,
-      emoji,
-      role_id,
-      description
-    } = req.body
+    const { guild_id, channel_id, message_id, emoji, role_id, description } = req.body
 
     if (!guild_id || !channel_id || !message_id || !emoji || !role_id) {
-      return res.status(400).json({ error: 'All fields are required' })
+      return res.status(400).json({ error: "All fields are required" })
     }
 
     // Save reaction role to database
     const { data: reactionRole, error } = await supabase
-      .from('reaction_roles')
+      .from("reaction_roles")
       .insert({
         guild_id,
         channel_id,
@@ -190,7 +183,7 @@ router.post("/single", authenticateToken, requireGuildAccess, async (req, res) =
         emoji,
         role_id,
         description,
-        created_by: req.user.discord_id
+        created_by: req.user.discord_id,
       })
       .select()
       .single()
@@ -201,23 +194,23 @@ router.post("/single", authenticateToken, requireGuildAccess, async (req, res) =
 
     // Add reaction to message
     try {
-      const message = await discordAPI.client.channels.cache.get(channel_id)?.messages.fetch(message_id)
+      const message = await client.channels.cache.get(channel_id)?.messages.fetch(message_id)
       if (message) {
         await message.react(emoji)
       }
     } catch (discordError) {
-      console.error('Failed to add reaction:', discordError)
+      console.error("Failed to add reaction:", discordError)
       // Continue even if reaction fails
     }
 
     res.status(201).json({
       success: true,
-      message: 'Reaction role created successfully',
-      reaction_role: reactionRole
+      message: "Reaction role created successfully",
+      reaction_role: reactionRole,
     })
   } catch (error) {
-    console.error('Create reaction role error:', error)
-    res.status(500).json({ error: 'Failed to create reaction role' })
+    console.error("Create reaction role error:", error)
+    res.status(500).json({ error: "Failed to create reaction role" })
   }
 })
 
@@ -343,30 +336,30 @@ router.put("/:reactionRoleId/description", authenticateToken, async (req, res) =
     const { description } = req.body
 
     const { data: reactionRole, error } = await supabase
-      .from('reaction_roles')
+      .from("reaction_roles")
       .update({
         description,
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       })
-      .eq('id', reactionRoleId)
+      .eq("id", reactionRoleId)
       .select()
       .single()
 
     if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({ error: 'Reaction role not found' })
+      if (error.code === "PGRST116") {
+        return res.status(404).json({ error: "Reaction role not found" })
       }
       throw error
     }
 
     res.json({
       success: true,
-      message: 'Reaction role updated successfully',
-      reaction_role: reactionRole
+      message: "Reaction role updated successfully",
+      reaction_role: reactionRole,
     })
   } catch (error) {
-    console.error('Update reaction role error:', error)
-    res.status(500).json({ error: 'Failed to update reaction role' })
+    console.error("Update reaction role error:", error)
+    res.status(500).json({ error: "Failed to update reaction role" })
   }
 })
 
@@ -410,6 +403,115 @@ router.delete("/:reactionRoleId", authenticateToken, async (req, res) => {
   } catch (error) {
     console.error("Delete reaction role error:", error)
     res.status(500).json({ error: "Failed to delete reaction role" })
+  }
+})
+
+// Get reaction role mappings
+router.get("/:guildId/:reactionRoleId/mappings", authenticateToken, requireGuildAccess, async (req, res) => {
+  try {
+    const { data: mappings, error } = await supabase
+      .from("reaction_role_mappings")
+      .select("*")
+      .eq("reaction_role_id", req.params.reactionRoleId)
+
+    if (error) {
+      throw error
+    }
+
+    res.json(mappings)
+  } catch (error) {
+    console.error("Get reaction role mappings error:", error)
+    res.status(500).json({ error: "Failed to get reaction role mappings" })
+  }
+})
+
+// Add role mapping to existing reaction role
+router.post("/:guildId/:reactionRoleId/mappings", authenticateToken, requireGuildAccess, async (req, res) => {
+  const { role_id, emoji, description } = req.body
+
+  if (!role_id || !emoji) {
+    return res.status(400).json({ error: "role_id and emoji are required" })
+  }
+
+  try {
+    const { data: mapping, error } = await supabase
+      .from("reaction_role_mappings")
+      .insert({
+        reaction_role_id: req.params.reactionRoleId,
+        role_id,
+        emoji,
+        description,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    res.status(201).json({
+      success: true,
+      mapping,
+      message: "Role mapping added successfully",
+    })
+  } catch (error) {
+    console.error("Add role mapping error:", error)
+    res.status(500).json({ error: "Failed to add role mapping" })
+  }
+})
+
+// Delete role mapping
+router.delete(
+  "/:guildId/:reactionRoleId/mappings/:mappingId",
+  authenticateToken,
+  requireGuildAccess,
+  async (req, res) => {
+    try {
+      const { error } = await supabase
+        .from("reaction_role_mappings")
+        .delete()
+        .eq("id", req.params.mappingId)
+        .eq("reaction_role_id", req.params.reactionRoleId)
+
+      if (error) {
+        throw error
+      }
+
+      res.json({
+        success: true,
+        message: "Role mapping deleted successfully",
+      })
+    } catch (error) {
+      console.error("Delete role mapping error:", error)
+      res.status(500).json({ error: "Failed to delete role mapping" })
+    }
+  },
+)
+
+// Delete reaction role setup
+router.delete("/:guildId/:reactionRoleId", authenticateToken, requireGuildAccess, async (req, res) => {
+  try {
+    // Delete mappings first
+    await supabase.from("reaction_role_mappings").delete().eq("reaction_role_id", req.params.reactionRoleId)
+
+    // Delete reaction role
+    const { error } = await supabase
+      .from("reaction_roles")
+      .delete()
+      .eq("id", req.params.reactionRoleId)
+      .eq("guild_id", req.params.guildId)
+
+    if (error) {
+      throw error
+    }
+
+    res.json({
+      success: true,
+      message: "Reaction role setup deleted successfully",
+    })
+  } catch (error) {
+    console.error("Delete reaction role error:", error)
+    res.status(500).json({ error: "Failed to delete reaction role setup" })
   }
 })
 

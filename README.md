@@ -1,462 +1,227 @@
-# 🚀 Minbot Dashboard API
+# Discord Bot Management API
 
-A comprehensive REST API for managing Discord bots with full CRUD operations, real-time Discord integration, and advanced features.
+A comprehensive REST API for managing Discord bots with authentication, moderation, analytics, and more.
 
-![Express.js](https://img.shields.io/badge/Express.js-404D59?style=for-the-badge&logo=express)
-![Node.js](https://img.shields.io/badge/Node.js-43853D?style=for-the-badge&logo=node.js&logoColor=white)
-![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
-![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)
+## 🚀 Features
 
-## 📋 Table of Contents
+- **Authentication**: Discord OAuth2 with JWT tokens
+- **User Management**: Admin controls and user profiles
+- **Guild Management**: Server settings and configuration
+- **Command System**: Usage tracking and toggle controls
+- **Moderation**: Real punishment execution via Discord API
+- **Role Management**: Discord role sync and assignment
+- **Giveaways**: Automated giveaway system
+- **Announcements**: Rich embed announcements
+- **Reaction Roles**: Interactive role assignment
+- **Analytics**: Comprehensive usage statistics
+- **Bot Management**: Status monitoring and controls
 
-- [Features](#-features)
-- [Quick Start](#-quick-start)
-- [API Endpoints](#-api-endpoints)
-- [Authentication](#-authentication)
-- [Error Handling](#-error-handling)
-- [Rate Limiting](#-rate-limiting)
-- [Deployment](#-deployment)
+## 📋 Prerequisites
 
-## ✨ Features
-
-### 🔐 **Authentication & Security**
-- Discord OAuth2 integration
-- JWT-based authentication
-- Role-based access control (Admin/User)
-- Rate limiting protection
-- CORS configuration
-
-### 🎛️ **Core API Features**
-- **User Management** - CRUD operations for Discord users
-- **Guild Management** - Server configuration and analytics
-- **Command System** - Bot command management and statistics
-- **Moderation Tools** - Punishment execution and logging
-- **Role Management** - Discord role synchronization and assignment
-- **Giveaway System** - Automated giveaway creation and management
-- **Announcements** - Rich embed announcements with scheduling
-- **Reaction Roles** - Automated role assignment via reactions
-- **Analytics** - Comprehensive usage and performance metrics
-- **Settings** - Bot and guild configuration management
-
-### 🤖 **Discord Integration**
-- Real-time Discord API integration
-- Automatic role synchronization
-- Message and embed creation
-- Punishment execution (warn, timeout, kick, ban)
-- Reaction handling for interactive features
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Node.js 16+ installed
+- Node.js 16+ 
 - Discord Bot Token
-- Supabase account and database
-- Discord Application with OAuth2 configured
+- Supabase Account
+- Discord Application (for OAuth2)
 
-### 1. Installation
+## 🛠️ Installation
 
+1. **Clone and install dependencies:**
 ```bash
-git clone <repository-url>
-cd discord-bot-api
 npm install
 ```
 
-### 2. Environment Setup
-
-Copy `.env.example` to `.env` and configure:
-
-```env
-# Server Configuration
-PORT=10000
-NODE_ENV=production
-FRONTEND_URL=http://localhost:3000
-
-# Supabase Configuration
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-
-# Discord Configuration
-DISCORD_BOT_TOKEN=your_discord_bot_token
-DISCORD_CLIENT_ID=your_discord_client_id
-DISCORD_CLIENT_SECRET=your_discord_client_secret
-DISCORD_REDIRECT_URI=http://localhost:3000/auth/callback
-
-# JWT Configuration
-JWT_SECRET=your_jwt_secret_key
+2. **Environment Setup:**
+```bash
+cp .env.example .env
 ```
 
-### 3. Database Setup
+3. **Configure environment variables:**
+```env
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_supabase_key
+DISCORD_BOT_TOKEN=your_bot_token
+DISCORD_CLIENT_ID=your_client_id
+DISCORD_CLIENT_SECRET=your_client_secret
+JWT_SECRET=your_jwt_secret
+```
 
-Ensure your Supabase database has the required tables (refer to the dashboard project's SQL scripts).
-
-### 4. Start the Server
-
+4. **Start the server:**
 ```bash
 npm start
+# or for development
+npm run dev
 ```
-
-The API will be available at `http://localhost:10000`
 
 ## 📡 API Endpoints
 
-### 🔐 Authentication
+### Authentication
+- `GET /api/auth/discord` - Get Discord OAuth URL
+- `POST /api/auth/discord/callback` - Handle OAuth callback
+- `POST /api/auth/logout` - Logout user
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/auth/discord/callback` | Discord OAuth callback |
-| `GET` | `/api/auth/me` | Get current user |
-| `POST` | `/api/auth/logout` | Logout user |
+### Users
+- `GET /api/users/me` - Get current user profile
+- `GET /api/users` - Get all users (admin)
+- `GET /api/users/:userId` - Get user by ID (admin)
+- `PATCH /api/users/:userId/admin` - Update admin status (admin)
+- `DELETE /api/users/:userId` - Delete user (admin)
 
-### 👥 User Management
+### Guilds
+- `GET /api/guilds` - Get all guilds (admin)
+- `GET /api/guilds/me` - Get user's guilds
+- `GET /api/guilds/:guildId` - Get guild details
+- `POST /api/guilds/:guildId/sync` - Sync with Discord
+- `POST /api/guilds` - Add new guild (admin)
+- `PATCH /api/guilds/:guildId` - Update guild settings
+- `DELETE /api/guilds/:guildId` - Delete guild (admin)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/users` | List users with filtering |
-| `GET` | `/api/users/:userId` | Get user details |
-| `PUT` | `/api/users/:userId` | Update user profile |
-| `GET` | `/api/users/:userId/activity` | Get user activity |
+### Commands
+- `GET /api/commands/:guildId` - Get guild commands
+- `GET /api/commands/:guildId/stats` - Get usage statistics
+- `PATCH /api/commands/:guildId/:commandName/toggle` - Toggle command
+- `POST /api/commands/:guildId/usage` - Log command usage
 
-### 🏰 Guild Management
+### Moderation
+- `GET /api/moderation/:guildId/logs` - Get moderation logs
+- `POST /api/moderation/:guildId/punish` - Execute punishment
+- `GET /api/moderation/:guildId/user/:userId/history` - Get user punishment history
+- `DELETE /api/moderation/:guildId/punishment/:logId` - Remove punishment
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/guilds` | List all guilds |
-| `GET` | `/api/guilds/:guildId` | Get guild details |
-| `PUT` | `/api/guilds/:guildId/settings` | Update guild settings |
-| `GET` | `/api/guilds/:guildId/analytics` | Get guild analytics |
+### Roles
+- `GET /api/roles/:guildId` - Get guild roles
+- `POST /api/roles/:guildId/sync` - Sync roles with Discord
+- `POST /api/roles/:guildId/assign` - Assign role to user
+- `POST /api/roles/:guildId/remove` - Remove role from user
+- `GET /api/roles/:guildId/history` - Get role assignment history
 
-### ⚡ Commands
+### Giveaways
+- `GET /api/giveaways/:guildId` - Get guild giveaways
+- `POST /api/giveaways/:guildId` - Create new giveaway
+- `POST /api/giveaways/:guildId/:giveawayId/end` - End giveaway early
+- `DELETE /api/giveaways/:guildId/:giveawayId` - Delete giveaway
+- `GET /api/giveaways/:guildId/:giveawayId/entries` - Get giveaway entries
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/commands` | List commands with filtering |
-| `GET` | `/api/commands/:commandId` | Get command details |
-| `PUT` | `/api/commands/:commandId` | Update command |
-| `PATCH` | `/api/commands/:commandId/toggle` | Toggle command status |
-| `GET` | `/api/commands/meta/categories` | Get command categories |
+### Announcements
+- `GET /api/announcements/:guildId` - Get guild announcements
+- `POST /api/announcements/:guildId` - Create announcement
+- `PATCH /api/announcements/:guildId/:announcementId` - Update announcement
+- `DELETE /api/announcements/:guildId/:announcementId` - Delete announcement
+- `POST /api/announcements/:guildId/schedule` - Schedule announcement
 
-### 🛡️ Moderation
+### Reaction Roles
+- `GET /api/reaction-roles/:guildId` - Get reaction role setups
+- `POST /api/reaction-roles/:guildId` - Create reaction role setup
+- `GET /api/reaction-roles/:guildId/:reactionRoleId/mappings` - Get role mappings
+- `POST /api/reaction-roles/:guildId/:reactionRoleId/mappings` - Add role mapping
+- `DELETE /api/reaction-roles/:guildId/:reactionRoleId/mappings/:mappingId` - Delete mapping
+- `DELETE /api/reaction-roles/:guildId/:reactionRoleId` - Delete setup
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/moderation/logs` | Get moderation logs |
-| `POST` | `/api/moderation/punish` | Execute punishment |
-| `GET` | `/api/moderation/stats` | Get moderation statistics |
-| `GET` | `/api/moderation/active` | Get active punishments |
+### Analytics
+- `GET /api/analytics/:guildId/overview` - Get analytics overview
+- `GET /api/analytics/:guildId/commands` - Get command analytics
+- `GET /api/analytics/:guildId/moderation` - Get moderation analytics
+- `GET /api/analytics/:guildId/activity` - Get user activity analytics
 
-### 🎭 Roles
+### Settings
+- `GET /api/settings/:guildId` - Get guild settings
+- `PATCH /api/settings/:guildId` - Update guild settings
+- `POST /api/settings/:guildId/reset` - Reset to defaults
+- `GET /api/settings/bot/global` - Get bot settings (admin)
+- `PATCH /api/settings/bot/global` - Update bot settings (admin)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/roles` | List roles with filtering |
-| `POST` | `/api/roles/sync/:guildId` | Sync Discord roles |
-| `POST` | `/api/roles` | Create new role |
-| `PUT` | `/api/roles/:roleId` | Update role |
-| `DELETE` | `/api/roles/:roleId` | Delete role |
-| `POST` | `/api/roles/:roleId/assign` | Assign/remove role |
-
-### 🎁 Giveaways
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/giveaways` | List giveaways |
-| `POST` | `/api/giveaways` | Create giveaway |
-| `POST` | `/api/giveaways/:id/end` | End giveaway |
-| `DELETE` | `/api/giveaways/:id` | Delete giveaway |
-| `GET` | `/api/giveaways/:id/entries` | Get giveaway entries |
-
-### 📢 Announcements
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/announcements` | List announcements |
-| `POST` | `/api/announcements` | Create announcement |
-| `POST` | `/api/announcements/:id/send` | Send scheduled announcement |
-| `DELETE` | `/api/announcements/:id` | Delete announcement |
-
-### 🎯 Reaction Roles
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/reaction-roles` | List reaction roles |
-| `POST` | `/api/reaction-roles` | Create reaction role message |
-| `PUT` | `/api/reaction-roles/:id` | Update reaction role |
-| `DELETE` | `/api/reaction-roles/:id` | Delete reaction role |
-
-### 📊 Analytics
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/analytics/dashboard` | Dashboard analytics |
-| `GET` | `/api/analytics/users` | User analytics |
-| `GET` | `/api/analytics/commands` | Command usage analytics |
-
-### ⚙️ Settings
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/settings/:guildId` | Get bot settings |
-| `PUT` | `/api/settings/:guildId` | Update bot settings |
-| `GET` | `/api/settings/:guildId/guild` | Get guild settings |
-| `PUT` | `/api/settings/:guildId/guild` | Update guild settings |
-
-### 🤖 Bot Management
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/bot/status` | Get bot status |
-| `POST` | `/api/bot/update-settings` | Update bot configuration |
-| `POST` | `/api/bot/restart` | Restart bot (Admin) |
-| `GET` | `/api/bot/logs` | Get bot logs (Admin) |
-| `GET` | `/api/bot/metrics` | Get performance metrics |
+### Bot Management
+- `GET /api/bot/status` - Get bot status and metrics (admin)
+- `POST /api/bot/restart` - Restart bot (admin)
+- `POST /api/bot/presence` - Update bot presence (admin)
+- `GET /api/bot/logs` - Get bot logs (admin)
+- `DELETE /api/bot/logs` - Clear old logs (admin)
+- `GET /api/bot/guilds` - Get guild list (admin)
+- `POST /api/bot/guilds/:guildId/leave` - Leave guild (admin)
 
 ## 🔐 Authentication
 
-The API uses JWT-based authentication with Discord OAuth2.
+All endpoints (except auth endpoints) require a JWT token in the Authorization header:
 
-### Getting Access Token
-
-1. **Discord OAuth Flow:**
-```javascript
-// Redirect user to Discord OAuth
-const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URI}&response_type=code&scope=identify%20email`;
+```
+Authorization: Bearer your_jwt_token_here
 ```
 
-2. **Exchange Code for Token:**
-```javascript
-POST /api/auth/discord/callback
-Content-Type: application/json
+## 🛡️ Permissions
 
-{
-  "code": "discord_oauth_code"
-}
-```
+- **Public**: Authentication endpoints
+- **User**: Guild-specific endpoints (requires guild access)
+- **Admin**: User management, bot management, global settings
 
-3. **Use Token in Requests:**
-```javascript
-Authorization: Bearer <access_token>
-```
+## 📊 Rate Limiting
 
-### Protected Routes
-
-Most endpoints require authentication. Admin-only endpoints are marked in the documentation.
+- 100 requests per 15 minutes per IP
+- Adjust in `index.js` if needed
 
 ## 🚨 Error Handling
 
-The API returns consistent error responses:
+All endpoints return consistent error responses:
 
 ```json
 {
-  "error": "Error message",
-  "details": "Additional error details (optional)",
-  "code": "ERROR_CODE (optional)"
+  "error": "Error message description"
 }
 ```
 
-### HTTP Status Codes
-
+Common HTTP status codes:
 - `200` - Success
 - `201` - Created
 - `400` - Bad Request
 - `401` - Unauthorized
 - `403` - Forbidden
 - `404` - Not Found
-- `429` - Too Many Requests
 - `500` - Internal Server Error
-
-## ⏱️ Rate Limiting
-
-The API implements rate limiting to prevent abuse:
-
-- **Global Limit:** 100 requests per 15 minutes per IP
-- **Endpoint-specific limits** may apply to resource-intensive operations
-
-Rate limit headers are included in responses:
-```
-X-RateLimit-Limit: 100
-X-RateLimit-Remaining: 95
-X-RateLimit-Reset: 1640995200
-```
-
-## 📝 Request/Response Examples
-
-### Create Giveaway
-
-**Request:**
-```javascript
-POST /api/giveaways
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "guild_id": "123456789012345678",
-  "channel_id": "987654321098765432",
-  "title": "🎉 Amazing Prize Giveaway!",
-  "description": "Win an awesome prize!",
-  "prize": "Discord Nitro",
-  "winner_count": 1,
-  "duration_minutes": 1440,
-  "requirements": {
-    "min_account_age_days": 30,
-    "required_roles": []
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Giveaway created successfully",
-  "giveaway": {
-    "id": 1,
-    "guild_id": "123456789012345678",
-    "channel_id": "987654321098765432",
-    "message_id": "111222333444555666",
-    "title": "🎉 Amazing Prize Giveaway!",
-    "prize": "Discord Nitro",
-    "winner_count": 1,
-    "end_time": "2024-01-15T12:00:00.000Z",
-    "status": "active",
-    "created_at": "2024-01-14T12:00:00.000Z"
-  }
-}
-```
-
-### Execute Punishment
-
-**Request:**
-```javascript
-POST /api/moderation/punish
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "guild_id": "123456789012345678",
-  "user_id": "987654321098765432",
-  "action": "timeout",
-  "reason": "Inappropriate behavior",
-  "duration": 60
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Successfully timeouted user",
-  "log": {
-    "id": 1,
-    "guild_id": "123456789012345678",
-    "user_id": "987654321098765432",
-    "moderator_id": "111222333444555666",
-    "action": "timeout",
-    "reason": "Inappropriate behavior",
-    "duration": 60,
-    "created_at": "2024-01-14T12:00:00.000Z"
-  }
-}
-```
-
-### Sync Discord Roles
-
-**Request:**
-```javascript
-POST /api/roles/sync/123456789012345678
-Authorization: Bearer <token>
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "count": 15,
-  "message": "Successfully synced 15 roles from Discord",
-  "roles": [
-    {
-      "role_id": "111222333444555666",
-      "guild_id": "123456789012345678",
-      "name": "Admin",
-      "color": 16711680,
-      "position": 10,
-      "permissions": "8",
-      "managed": false,
-      "mentionable": true
-    }
-  ]
-}
-```
-
-## 🚀 Deployment
-
-### Environment Variables for Production
-
-```env
-PORT=10000
-NODE_ENV=production
-FRONTEND_URL=https://your-dashboard-domain.com
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-DISCORD_BOT_TOKEN=your_bot_token
-DISCORD_CLIENT_ID=your_client_id
-DISCORD_CLIENT_SECRET=your_client_secret
-DISCORD_REDIRECT_URI=https://your-dashboard-domain.com/auth/callback
-JWT_SECRET=your_secure_jwt_secret
-```
-
-### Docker Deployment
-
-```dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-COPY . .
-EXPOSE 10000
-CMD ["npm", "start"]
-```
-
-### Health Check
-
-The API provides a health check endpoint:
-
-```javascript
-GET /health
-
-Response:
-{
-  "status": "OK",
-  "timestamp": "2024-01-14T12:00:00.000Z"
-}
-```
 
 ## 🔧 Development
 
-### Running in Development
-
 ```bash
+# Install dependencies
 npm install
-npm run dev  # If you have nodemon configured
+
+# Start development server with auto-reload
+npm run dev
+
+# Check health endpoint
+curl http://localhost:3001/health
 ```
 
-### Testing
+## 📝 Example Usage
 
+### Get Discord OAuth URL
 ```bash
-# Test API endpoints
-curl -X GET http://localhost:10000/health
-
-# Test with authentication
-curl -X GET http://localhost:10000/api/users \
-  -H "Authorization: Bearer <your_token>"
+curl http://localhost:3001/api/auth/discord
 ```
 
-## 📚 Additional Resources
+### Create Giveaway
+```bash
+curl -X POST http://localhost:3001/api/giveaways/GUILD_ID \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Free Nitro Giveaway",
+    "prize": "Discord Nitro Classic",
+    "duration_hours": 24,
+    "channel_id": "CHANNEL_ID",
+    "winner_count": 1
+  }'
+```
 
-- [Discord.js Documentation](https://discord.js.org/)
-- [Supabase Documentation](https://supabase.com/docs)
-- [Express.js Documentation](https://expressjs.com/)
-- [Discord API Documentation](https://discord.com/developers/docs)
+### Execute Moderation Action
+```bash
+curl -X POST http://localhost:3001/api/moderation/GUILD_ID/punish \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "USER_ID",
+    "action_type": "timeout",
+    "reason": "Spamming",
+    "duration": 10
+  }'
+```
 
 ## 🤝 Contributing
 
@@ -468,10 +233,4 @@ curl -X GET http://localhost:10000/api/users \
 
 ## 📄 License
 
-This project is licensed under the MIT License.
-
----
-
-**🚀 Ready to power your Discord bot dashboard!**
-
-*For support, please refer to the main dashboard project documentation or create an issue.*
+MIT License - see LICENSE file for details

@@ -1,83 +1,172 @@
-const express = require('express')
-const { supabase } = require('../config/database')
-const { discordAPI, createEmbed } = require('../config/discord')
-const { authenticateToken, requireGuildAccess } = require('../middleware/auth')
+const express = require("express")
+const { supabase } = require("../config/database")
+const { sendMessage, createEmbed } = require("../config/discord")
+const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
 
 const router = express.Router()
 
-// Get all announcements
-router.get('/', authenticateToken, async (req, res) => {
+// Get announcements for a guild
+router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
   try {
-    const { guild_id, status, page = 1, limit = 20 } = req.query
-    const offset = (page - 1) * limit
+    const { data: announcements, error } = await supabase
+      .from("announcements")
+      .select("*")
+      .eq("guild_id", req.params.guildId)
+      .order("created_at", { ascending: false })
 
-    let query = supabase
-      .from('announcements')
-      .select('*', { count: 'exact' })
-
-    if (guild_id) {
-      query = query.eq('guild_id', guild_id)
+    if (error) {
+      throw error
     }
 
-    if (status) {
-      query = query.eq('status', status)
+    res.json(announcements)
+  } catch (error) {
+    console.error("Get announcements error:", error)
+    res.status(500).json({ error: "Failed to get announcements" })
+  }
+})
+
+// Create new announcement
+router.post("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+  const { title, content, channel_id, color = "#0099ff", ping_role } = req.body
+
+  if (!title || !content || !channel_id) {
+    return res.status(400).json({ error: "title, content, and channel_id are required" })
+  }
+
+  try {
+    // Create announcement in database
+    const { data: announcement, error } = await supabase
+      .from("announcements")
+      .insert({
+        guild_id: req.params.guildId,
+        title,
+        content,
+        channel_id,
+        color,
+        ping_role,
+        created_by: req.user.discord_id,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      throw error
     }
 
-    const { data: announcements, error, count } = await query
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1)
+    // Create embed for Discord message
+    const embed = createEmbed(title, content, color)
+
+    let messageContent = ""
+    if (ping_role) {
+      messageContent = `<@&${ping_role}>`
+    }
+
+    // Send announcement to Discord
+    const message = await sendMessage(channel_id, {
+      content: messageContent,
+      embeds: [embed],
+    })
+
+    if (message) {
+      // Update announcement with message ID
+      await supabase.from("announcements").update({ message_id: message.id }).eq("id", announcement.id)
+
+      announcement.message_id = message.id
+    }
+
+    res.status(201).json({
+      success: true,
+      announcement,
+      message: "Announcement created successfully",
+    })
+  } catch (error) {
+    console.error("Create announcement error:", error)
+    res.status(500).json({ error: "Failed to create announcement" })
+  }
+})
+
+// Update announcement
+router.patch("/:guildId/:announcementId", authenticateToken, requireGuildAccess, async (req, res) => {
+  const { title, content, color } = req.body
+
+  try {
+    const { data: announcement, error } = await supabase
+      .from("announcements")
+      .update({
+        title,
+        content,
+        color,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", req.params.announcementId)
+      .eq("guild_id", req.params.guildId)
+      .select()
+      .single()
+
+    if (error) {
+      return res.status(404).json({ error: "Announcement not found" })
+    }
+
+    res.json({
+      success: true,
+      announcement,
+      message: "Announcement updated successfully",
+    })
+  } catch (error) {
+    console.error("Update announcement error:", error)
+    res.status(500).json({ error: "Failed to update announcement" })
+  }
+})
+
+// Delete announcement
+router.delete("/:guildId/:announcementId", authenticateToken, requireGuildAccess, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from("announcements")
+      .delete()
+      .eq("id", req.params.announcementId)
+      .eq("guild_id", req.params.guildId)
 
     if (error) {
       throw error
     }
 
     res.json({
-      announcements,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: count,
-        pages: Math.ceil(count / limit)
-      }
+      success: true,
+      message: "Announcement deleted successfully",
     })
   } catch (error) {
-    console.error('Get announcements error:', error)
-    res.status(500).json({ error: 'Failed to fetch announcements' })
+    console.error("Delete announcement error:", error)
+    res.status(500).json({ error: "Failed to delete announcement" })
   }
 })
 
-// Create announcement
-router.post('/', authenticateToken, requireGuildAccess, async (req, res) => {
+// Schedule announcement
+router.post("/:guildId/schedule", authenticateToken, requireGuildAccess, async (req, res) => {
+  const { title, content, channel_id, scheduled_for, color = "#0099ff", ping_role } = req.body
+
+  if (!title || !content || !channel_id || !scheduled_for) {
+    return res.status(400).json({ error: "title, content, channel_id, and scheduled_for are required" })
+  }
+
+  const scheduledDate = new Date(scheduled_for)
+  if (scheduledDate <= new Date()) {
+    return res.status(400).json({ error: "scheduled_for must be in the future" })
+  }
+
   try {
-    const {
-      guild_id,
-      channel_id,
-      title,
-      content,
-      embed_color = '#7ed88aff',
-      scheduled_for,
-      ping_role
-    } = req.body
-
-    if (!guild_id || !channel_id || !title || !content) {
-      return res.status(400).json({ error: 'Guild ID, channel ID, title, and content are required' })
-    }
-
-    const status = scheduled_for ? 'scheduled' : 'draft'
-
-    // Save announcement to database
     const { data: announcement, error } = await supabase
-      .from('announcements')
+      .from("announcements")
       .insert({
-        guild_id,
-        channel_id,
+        guild_id: req.params.guildId,
         title,
         content,
-        embed_color,
-        scheduled_for,
+        channel_id,
+        color,
         ping_role,
+        scheduled_for: scheduledDate.toISOString(),
+        status: "scheduled",
         created_by: req.user.discord_id,
-        status
       })
       .select()
       .single()
@@ -88,109 +177,12 @@ router.post('/', authenticateToken, requireGuildAccess, async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Announcement created successfully',
-      announcement
+      announcement,
+      message: "Announcement scheduled successfully",
     })
   } catch (error) {
-    console.error('Create announcement error:', error)
-    res.status(500).json({ error: 'Failed to create announcement' })
-  }
-})
-
-// Send announcement
-router.post('/:announcementId/send', authenticateToken, async (req, res) => {
-  try {
-    const { announcementId } = req.params
-
-    // Get announcement
-    const { data: announcement, error: fetchError } = await supabase
-      .from('announcements')
-      .select('*')
-      .eq('id', announcementId)
-      .single()
-
-    if (fetchError) {
-      if (fetchError.code === 'PGRST116') {
-        return res.status(404).json({ error: 'Announcement not found' })
-      }
-      throw fetchError
-    }
-
-    if (announcement.status === 'sent') {
-      return res.status(400).json({ error: 'Announcement already sent' })
-    }
-
-    // Create embed
-    const embed = createEmbed(
-      announcement.title,
-      announcement.content,
-      announcement.embed_color
-    )
-
-    // Prepare message content
-    let messageContent = ''
-    if (announcement.ping_role) {
-      messageContent = `<@&${announcement.ping_role}>`
-    }
-
-    // Send announcement
-    const message = await discordAPI.sendMessage(announcement.channel_id, {
-      content: messageContent,
-      embeds: [embed]
-    })
-
-    if (!message) {
-      return res.status(400).json({ error: 'Failed to send announcement' })
-    }
-
-    // Update announcement status
-    const { data: updatedAnnouncement, error: updateError } = await supabase
-      .from('announcements')
-      .update({
-        status: 'sent',
-        message_id: message.id,
-        sent_at: new Date().toISOString()
-      })
-      .eq('id', announcementId)
-      .select()
-      .single()
-
-    if (updateError) {
-      throw updateError
-    }
-
-    res.json({
-      success: true,
-      message: 'Announcement sent successfully',
-      announcement: updatedAnnouncement
-    })
-  } catch (error) {
-    console.error('Send announcement error:', error)
-    res.status(500).json({ error: 'Failed to send announcement' })
-  }
-})
-
-// Delete announcement
-router.delete('/:announcementId', authenticateToken, async (req, res) => {
-  try {
-    const { announcementId } = req.params
-
-    const { error } = await supabase
-      .from('announcements')
-      .delete()
-      .eq('id', announcementId)
-
-    if (error) {
-      throw error
-    }
-
-    res.json({
-      success: true,
-      message: 'Announcement deleted successfully'
-    })
-  } catch (error) {
-    console.error('Delete announcement error:', error)
-    res.status(500).json({ error: 'Failed to delete announcement' })
+    console.error("Schedule announcement error:", error)
+    res.status(500).json({ error: "Failed to schedule announcement" })
   }
 })
 

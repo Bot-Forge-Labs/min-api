@@ -1,173 +1,135 @@
-const express = require('express')
-const { supabase } = require('../config/database')
-const { authenticateToken, requireAdmin } = require('../middleware/auth')
+const express = require("express")
+const { supabase } = require("../config/database")
+const { authenticateToken, requireAdmin } = require("../middleware/auth")
 
 const router = express.Router()
 
-// Get all users (Admin only)
-router.get('/', authenticateToken, requireAdmin, async (req, res) => {
+// Get current user profile
+router.get("/me", authenticateToken, async (req, res) => {
   try {
-    const { page = 1, limit = 20, search = '' } = req.query
-    const offset = (page - 1) * limit
-
-    let query = supabase
-      .from('users')
-      .select('id, discord_id, username, discriminator, avatar, email, is_admin, created_at, last_login', { count: 'exact' })
-
-    if (search) {
-      query = query.or(`username.ilike.%${search}%,email.ilike.%${search}%`)
-    }
-
-    const { data: users, error, count } = await query
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1)
-
-    if (error) {
-      throw error
-    }
-
-    res.json({
-      users,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: count,
-        pages: Math.ceil(count / limit)
-      }
-    })
-  } catch (error) {
-    console.error('Get users error:', error)
-    res.status(500).json({ error: 'Failed to fetch users' })
-  }
-})
-
-// Get user by ID
-router.get('/:userId', authenticateToken, async (req, res) => {
-  try {
-    const { userId } = req.params
-
-    // Users can only view their own profile unless they're admin
-    if (userId !== req.user.discord_id && !req.user.is_admin) {
-      return res.status(403).json({ error: 'Access denied' })
-    }
-
     const { data: user, error } = await supabase
-      .from('users')
-      .select('id, discord_id, username, discriminator, avatar, email, is_admin, created_at, last_login')
-      .eq('discord_id', userId)
+      .from("users")
+      .select("*")
+      .eq("discord_id", req.user.discord_id)
       .single()
 
     if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({ error: 'User not found' })
-      }
-      throw error
+      return res.status(404).json({ error: "User not found" })
     }
 
-    res.json({ user })
+    res.json({
+      id: user.id,
+      discord_id: user.discord_id,
+      username: user.username,
+      avatar: user.avatar,
+      is_admin: user.is_admin,
+      created_at: user.created_at,
+      last_login: user.last_login,
+    })
   } catch (error) {
-    console.error('Get user error:', error)
-    res.status(500).json({ error: 'Failed to fetch user' })
+    console.error("Get user profile error:", error)
+    res.status(500).json({ error: "Failed to get user profile" })
   }
 })
 
-// Update user (Admin only)
-router.put('/:userId', authenticateToken, requireAdmin, async (req, res) => {
+// Get all users (admin only)
+router.get("/", authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { userId } = req.params
-    const { is_admin } = req.body
+    const { data: users, error } = await supabase.from("users").select("*").order("created_at", { ascending: false })
 
+    if (error) {
+      throw error
+    }
+
+    res.json(
+      users.map((user) => ({
+        id: user.id,
+        discord_id: user.discord_id,
+        username: user.username,
+        avatar: user.avatar,
+        is_admin: user.is_admin,
+        created_at: user.created_at,
+        last_login: user.last_login,
+      })),
+    )
+  } catch (error) {
+    console.error("Get users error:", error)
+    res.status(500).json({ error: "Failed to get users" })
+  }
+})
+
+// Get user by ID (admin only)
+router.get("/:userId", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { data: user, error } = await supabase.from("users").select("*").eq("discord_id", req.params.userId).single()
+
+    if (error) {
+      return res.status(404).json({ error: "User not found" })
+    }
+
+    res.json({
+      id: user.id,
+      discord_id: user.discord_id,
+      username: user.username,
+      avatar: user.avatar,
+      is_admin: user.is_admin,
+      created_at: user.created_at,
+      last_login: user.last_login,
+    })
+  } catch (error) {
+    console.error("Get user error:", error)
+    res.status(500).json({ error: "Failed to get user" })
+  }
+})
+
+// Update user admin status (admin only)
+router.patch("/:userId/admin", authenticateToken, requireAdmin, async (req, res) => {
+  const { is_admin } = req.body
+
+  if (typeof is_admin !== "boolean") {
+    return res.status(400).json({ error: "is_admin must be a boolean" })
+  }
+
+  try {
     const { data: user, error } = await supabase
-      .from('users')
+      .from("users")
       .update({ is_admin })
-      .eq('discord_id', userId)
+      .eq("discord_id", req.params.userId)
       .select()
       .single()
 
     if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({ error: 'User not found' })
-      }
-      throw error
-    }
-
-    res.json({ 
-      success: true, 
-      message: 'User updated successfully',
-      user 
-    })
-  } catch (error) {
-    console.error('Update user error:', error)
-    res.status(500).json({ error: 'Failed to update user' })
-  }
-})
-
-// Get user activity
-router.get('/:userId/activity', authenticateToken, async (req, res) => {
-  try {
-    const { userId } = req.params
-
-    // Users can only view their own activity unless they're admin
-    if (userId !== req.user.discord_id && !req.user.is_admin) {
-      return res.status(403).json({ error: 'Access denied' })
-    }
-
-    // Get recent moderation logs
-    const { data: moderationLogs, error: modError } = await supabase
-      .from('moderation_logs')
-      .select('*')
-      .eq('moderator_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(10)
-
-    if (modError) {
-      throw modError
-    }
-
-    // Get command usage
-    const { data: commandUsage, error: cmdError } = await supabase
-      .from('command_usage')
-      .select('command_name, count(*)')
-      .eq('user_id', userId)
-      .group('command_name')
-      .order('count', { ascending: false })
-      .limit(10)
-
-    if (cmdError) {
-      throw cmdError
+      return res.status(404).json({ error: "User not found" })
     }
 
     res.json({
-      moderation_logs: moderationLogs || [],
-      command_usage: commandUsage || []
+      success: true,
+      user: {
+        id: user.id,
+        discord_id: user.discord_id,
+        username: user.username,
+        is_admin: user.is_admin,
+      },
     })
   } catch (error) {
-    console.error('Get user activity error:', error)
-    res.status(500).json({ error: 'Failed to fetch user activity' })
+    console.error("Update user admin status error:", error)
+    res.status(500).json({ error: "Failed to update user admin status" })
   }
 })
 
-// Delete user (Admin only)
-router.delete('/:userId', authenticateToken, requireAdmin, async (req, res) => {
+// Delete user (admin only)
+router.delete("/:userId", authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { userId } = req.params
-
-    const { error } = await supabase
-      .from('users')
-      .delete()
-      .eq('discord_id', userId)
+    const { error } = await supabase.from("users").delete().eq("discord_id", req.params.userId)
 
     if (error) {
       throw error
     }
 
-    res.json({ 
-      success: true, 
-      message: 'User deleted successfully' 
-    })
+    res.json({ success: true, message: "User deleted successfully" })
   } catch (error) {
-    console.error('Delete user error:', error)
-    res.status(500).json({ error: 'Failed to delete user' })
+    console.error("Delete user error:", error)
+    res.status(500).json({ error: "Failed to delete user" })
   }
 })
 

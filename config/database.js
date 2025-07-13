@@ -1,41 +1,29 @@
 const { createClient } = require('@supabase/supabase-js')
 
-// Check for required environment variables
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-  throw new Error('Missing Supabase environment variables. Please check SUPABASE_URL and SUPABASE_KEY.')
+const supabaseUrl = process.env.SUPABASE_URL
+const supabaseKey = process.env.SUPABASE_ANON_KEY
+
+if (!supabaseUrl || !supabaseKey) {
+  console.error('Missing Supabase environment variables')
+  process.exit(1)
 }
 
-// Create Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY,
-  {
-    auth: {
-      autoRefreshToken: true,
-      persistSession: false
-    }
-  }
-)
+const supabase = createClient(supabaseUrl, supabaseKey)
 
 // Test connection
 const testConnection = async () => {
   try {
-    const { data, error } = await supabase
-      .from('users')
-      .select('count')
-      .limit(1)
-    
+    const { data, error } = await supabase.from('users').select('count').limit(1)
     if (error) {
-      console.warn('Database connection test failed:', error.message)
-    } else {
-      console.log('✅ Database connection successful')
+      console.error('Supabase connection error:', error)
+      return false
     }
-  } catch (err) {
-    console.warn('Database connection test error:', err.message)
+    console.log('✅ Supabase connected successfully')
+    return true
+  } catch (error) {
+    console.error('Supabase connection failed:', error)
+    return false
   }
 }
 
-// Test connection on startup
-testConnection()
-
-module.exports = { supabase }
+module.exports = { supabase, testConnection }
