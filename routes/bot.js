@@ -1,12 +1,12 @@
 const express = require("express")
 const { supabase } = require("../config/database")
 const { client } = require("../config/discord")
-const { authenticateToken, requireAdmin } = require("../middleware/auth")
+const { authenticateApiKey, requireAdmin } = require("../middleware/auth")
 
 const router = express.Router()
 
-// Get bot status and metrics (admin only)
-router.get("/status", authenticateToken, requireAdmin, async (req, res) => {
+// Get bot status and metrics
+router.get("/status", authenticateApiKey, async (req, res) => {
   try {
     const botStatus = {
       online: client.isReady(),
@@ -47,8 +47,88 @@ router.get("/status", authenticateToken, requireAdmin, async (req, res) => {
   }
 })
 
-// Restart bot (admin only)
-router.post("/restart", authenticateToken, requireAdmin, async (req, res) => {
+// POST /bot/status - Update bot status
+router.post("/status", authenticateApiKey, async (req, res) => {
+  try {
+    const {
+      status,
+      activity_type,
+      activity_name,
+      uptime_seconds,
+      guild_count,
+      user_count,
+      command_count,
+      memory_usage,
+      cpu_usage,
+      version,
+    } = req.body
+
+    // First, try to get existing record
+    const { data: existing } = await supabase.from("bot_status").select("id").limit(1).single()
+
+    let result
+    if (existing) {
+      // Update existing record
+      result = await supabase
+        .from("bot_status")
+        .update({
+          status: status || "online",
+          activity_type: activity_type || "playing",
+          activity_name: activity_name || "with Discord",
+          uptime_seconds: uptime_seconds || 0,
+          guild_count: guild_count || 0,
+          user_count: user_count || 0,
+          command_count: command_count || 0,
+          memory_usage: memory_usage || 0,
+          cpu_usage: cpu_usage || 0,
+          version: version || "1.0.0",
+          last_updated: new Date().toISOString(),
+        })
+        .eq("id", existing.id)
+        .select()
+        .single()
+    } else {
+      // Insert new record
+      result = await supabase
+        .from("bot_status")
+        .insert({
+          id: 1,
+          status: status || "online",
+          activity_type: activity_type || "playing",
+          activity_name: activity_name || "with Discord",
+          uptime_seconds: uptime_seconds || 0,
+          guild_count: guild_count || 0,
+          user_count: user_count || 0,
+          command_count: command_count || 0,
+          memory_usage: memory_usage || 0,
+          cpu_usage: cpu_usage || 0,
+          version: version || "1.0.0",
+          last_updated: new Date().toISOString(),
+        })
+        .select()
+        .single()
+    }
+
+    if (result.error) {
+      console.error("Error updating bot status:", result.error)
+      return res.status(500).json({
+        error: "Failed to update bot status",
+        details: result.error.message,
+      })
+    }
+
+    res.json({ success: true, data: result.data })
+  } catch (error) {
+    console.error("Bot status update error:", error)
+    res.status(500).json({
+      error: "Internal server error",
+      details: error.message,
+    })
+  }
+})
+
+// Restart bot
+router.post("/restart", authenticateApiKey, requireAdmin, async (req, res) => {
   try {
     res.json({
       success: true,
@@ -65,8 +145,8 @@ router.post("/restart", authenticateToken, requireAdmin, async (req, res) => {
   }
 })
 
-// Update bot presence (admin only)
-router.post("/presence", authenticateToken, requireAdmin, async (req, res) => {
+// Update bot presence
+router.post("/presence", authenticateApiKey, async (req, res) => {
   const { status, activity_type, activity_name } = req.body
 
   const validStatuses = ["online", "idle", "dnd", "invisible"]
@@ -107,8 +187,8 @@ router.post("/presence", authenticateToken, requireAdmin, async (req, res) => {
   }
 })
 
-// Get bot logs (admin only)
-router.get("/logs", authenticateToken, requireAdmin, async (req, res) => {
+// Get bot logs
+router.get("/logs", authenticateApiKey, requireAdmin, async (req, res) => {
   const { level = "all", limit = 100 } = req.query
 
   try {
@@ -129,8 +209,8 @@ router.get("/logs", authenticateToken, requireAdmin, async (req, res) => {
   }
 })
 
-// Clear bot logs (admin only)
-router.delete("/logs", authenticateToken, requireAdmin, async (req, res) => {
+// Clear bot logs
+router.delete("/logs", authenticateApiKey, requireAdmin, async (req, res) => {
   const { older_than_days = 30 } = req.body
 
   try {
@@ -150,8 +230,8 @@ router.delete("/logs", authenticateToken, requireAdmin, async (req, res) => {
   }
 })
 
-// Get guild list with bot presence (admin only)
-router.get("/guilds", authenticateToken, requireAdmin, async (req, res) => {
+// Get guild list with bot presence
+router.get("/guilds", authenticateApiKey, async (req, res) => {
   try {
     const guilds = client.guilds.cache.map((guild) => ({
       id: guild.id,
@@ -169,8 +249,8 @@ router.get("/guilds", authenticateToken, requireAdmin, async (req, res) => {
   }
 })
 
-// Leave guild (admin only)
-router.post("/guilds/:guildId/leave", authenticateToken, requireAdmin, async (req, res) => {
+// Leave guild
+router.post("/guilds/:guildId/leave", authenticateApiKey, requireAdmin, async (req, res) => {
   try {
     const guild = client.guilds.cache.get(req.params.guildId)
 

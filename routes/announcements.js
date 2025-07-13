@@ -1,12 +1,12 @@
 const express = require("express")
 const { supabase } = require("../config/database")
 const { sendMessage, createEmbed } = require("../config/discord")
-const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
+const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
 
 const router = express.Router()
 
 // Get announcements for a guild
-router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { data: announcements, error } = await supabase
       .from("announcements")
@@ -26,7 +26,7 @@ router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) 
 })
 
 // Create new announcement
-router.post("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { title, content, channel_id, color = "#0099ff", ping_role } = req.body
 
   if (!title || !content || !channel_id) {
@@ -86,7 +86,7 @@ router.post("/:guildId", authenticateToken, requireGuildAccess, async (req, res)
 })
 
 // Update announcement
-router.patch("/:guildId/:announcementId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.patch("/:guildId/:announcementId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { title, content, color } = req.body
 
   try {
@@ -119,7 +119,7 @@ router.patch("/:guildId/:announcementId", authenticateToken, requireGuildAccess,
 })
 
 // Delete announcement
-router.delete("/:guildId/:announcementId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.delete("/:guildId/:announcementId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { error } = await supabase
       .from("announcements")
@@ -142,7 +142,7 @@ router.delete("/:guildId/:announcementId", authenticateToken, requireGuildAccess
 })
 
 // Schedule announcement
-router.post("/:guildId/schedule", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId/schedule", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { title, content, channel_id, scheduled_for, color = "#0099ff", ping_role } = req.body
 
   if (!title || !content || !channel_id || !scheduled_for) {

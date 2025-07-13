@@ -1,12 +1,12 @@
 const express = require("express")
 const { supabase } = require("../config/database")
 const { getGuild } = require("../config/discord")
-const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
+const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
 
 const router = express.Router()
 
 // Get roles for a guild
-router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { data: roles, error } = await supabase
       .from("roles")
@@ -26,7 +26,7 @@ router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) 
 })
 
 // Sync roles with Discord
-router.post("/:guildId/sync", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId/sync", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const guild = await getGuild(req.params.guildId)
     if (!guild) {
@@ -73,7 +73,7 @@ router.post("/:guildId/sync", authenticateToken, requireGuildAccess, async (req,
 })
 
 // Assign role to user
-router.post("/:guildId/assign", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId/assign", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { user_id, role_id } = req.body
 
   if (!user_id || !role_id) {
@@ -127,7 +127,7 @@ router.post("/:guildId/assign", authenticateToken, requireGuildAccess, async (re
 })
 
 // Remove role from user
-router.post("/:guildId/remove", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId/remove", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { user_id, role_id } = req.body
 
   if (!user_id || !role_id) {
@@ -181,7 +181,7 @@ router.post("/:guildId/remove", authenticateToken, requireGuildAccess, async (re
 })
 
 // Get role assignment history
-router.get("/:guildId/history", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId/history", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { user_id, role_id, page = 1, limit = 50 } = req.query
 
   try {

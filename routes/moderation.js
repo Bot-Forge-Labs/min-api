@@ -1,12 +1,12 @@
 const express = require("express")
 const { supabase } = require("../config/database")
 const { getGuildMember, getGuild } = require("../config/discord")
-const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
+const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
 
 const router = express.Router()
 
 // Get moderation logs for a guild
-router.get("/:guildId/logs", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId/logs", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { page = 1, limit = 50, type, moderator } = req.query
 
   try {
@@ -36,7 +36,7 @@ router.get("/:guildId/logs", authenticateToken, requireGuildAccess, async (req, 
 })
 
 // Execute punishment
-router.post("/:guildId/punish", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId/punish", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { user_id, action_type, reason, duration } = req.body
 
   if (!user_id || !action_type || !reason) {
@@ -134,7 +134,7 @@ router.post("/:guildId/punish", authenticateToken, requireGuildAccess, async (re
 })
 
 // Get punishment history for a user
-router.get("/:guildId/user/:userId/history", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId/user/:userId/history", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { data: history, error } = await supabase
       .from("moderation_logs")
@@ -155,7 +155,7 @@ router.get("/:guildId/user/:userId/history", authenticateToken, requireGuildAcce
 })
 
 // Remove punishment (unban, unmute, etc.)
-router.delete("/:guildId/punishment/:logId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.delete("/:guildId/punishment/:logId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     // Get the original punishment
     const { data: log, error: fetchError } = await supabase

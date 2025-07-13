@@ -1,14 +1,14 @@
 const express = require("express")
 const { supabase } = require("../config/database")
-const { getGuild } = require("../config/discord")
-const { authenticateToken, requireAdmin, requireGuildAccess } = require("../middleware/auth")
+const { getGuild, client } = require("../config/discord")
+const { authenticateApiKey, requireAdmin, requireGuildAccess } = require("../middleware/auth")
 
 const router = express.Router()
 
-// Get all guilds (admin only)
-router.get("/", authenticateToken, requireAdmin, async (req, res) => {
+// Get all guilds
+router.get("/", authenticateApiKey, async (req, res) => {
   try {
-    const { data: guilds, error } = await supabase.from("guilds").select("*").order("name")
+    const { data: guilds, error } = await supabase.from("guilds").select("*").order("updated_at", { ascending: false })
 
     if (error) {
       throw error
@@ -17,12 +17,12 @@ router.get("/", authenticateToken, requireAdmin, async (req, res) => {
     res.json(guilds)
   } catch (error) {
     console.error("Get guilds error:", error)
-    res.status(500).json({ error: "Failed to get guilds" })
+    res.status(500).json({ error: "Failed to get guilds", details: error.message })
   }
 })
 
 // Get user's guilds
-router.get("/me", authenticateToken, async (req, res) => {
+router.get("/me", authenticateApiKey, async (req, res) => {
   try {
     let query = supabase.from("guilds").select("*")
 
@@ -50,22 +50,28 @@ router.get("/me", authenticateToken, async (req, res) => {
     res.json(guilds)
   } catch (error) {
     console.error("Get user guilds error:", error)
-    res.status(500).json({ error: "Failed to get user guilds" })
+    res.status(500).json({ error: "Failed to get user guilds", details: error.message })
   }
 })
 
 // Get guild by ID
-router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId", authenticateApiKey, async (req, res) => {
   try {
-    res.json(req.guild)
+    const { data: guild, error } = await supabase.from("guilds").select("*").eq("guild_id", req.params.guildId).single()
+
+    if (error || !guild) {
+      return res.status(404).json({ error: "Guild not found" })
+    }
+
+    res.json(guild)
   } catch (error) {
     console.error("Get guild error:", error)
-    res.status(500).json({ error: "Failed to get guild" })
+    res.status(500).json({ error: "Failed to get guild", details: error.message })
   }
 })
 
 // Sync guild with Discord
-router.post("/:guildId/sync", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId/sync", authenticateApiKey, async (req, res) => {
   try {
     const discordGuild = await getGuild(req.params.guildId)
 
@@ -73,16 +79,17 @@ router.post("/:guildId/sync", authenticateToken, requireGuildAccess, async (req,
       return res.status(404).json({ error: "Guild not found on Discord" })
     }
 
-    // Update guild info
+    // Upsert guild info
     const { data: updatedGuild, error } = await supabase
       .from("guilds")
-      .update({
+      .upsert({
+        guild_id: req.params.guildId,
         name: discordGuild.name,
         icon: discordGuild.icon,
         member_count: discordGuild.memberCount,
+        owner_id: discordGuild.ownerId,
         updated_at: new Date().toISOString(),
       })
-      .eq("guild_id", req.params.guildId)
       .select()
       .single()
 
@@ -96,13 +103,13 @@ router.post("/:guildId/sync", authenticateToken, requireGuildAccess, async (req,
     })
   } catch (error) {
     console.error("Sync guild error:", error)
-    res.status(500).json({ error: "Failed to sync guild" })
+    res.status(500).json({ error: "Failed to sync guild", details: error.message })
   }
 })
 
 // Add new guild
-router.post("/", authenticateToken, requireAdmin, async (req, res) => {
-  const { guild_id, name, icon } = req.body
+router.post("/", authenticateApiKey, async (req, res) => {
+  const { guild_id, name, icon, member_count, owner_id } = req.body
 
   if (!guild_id || !name) {
     return res.status(400).json({ error: "guild_id and name are required" })
@@ -111,11 +118,13 @@ router.post("/", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { data: guild, error } = await supabase
       .from("guilds")
-      .insert({
+      .upsert({
         guild_id,
         name,
         icon,
-        member_count: 0,
+        member_count: member_count || 0,
+        owner_id,
+        updated_at: new Date().toISOString(),
       })
       .select()
       .single()
@@ -127,12 +136,12 @@ router.post("/", authenticateToken, requireAdmin, async (req, res) => {
     res.status(201).json(guild)
   } catch (error) {
     console.error("Add guild error:", error)
-    res.status(500).json({ error: "Failed to add guild" })
+    res.status(500).json({ error: "Failed to add guild", details: error.message })
   }
 })
 
 // Update guild settings
-router.patch("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.patch("/:guildId", authenticateApiKey, async (req, res) => {
   const { prefix, welcome_channel, log_channel, auto_role } = req.body
 
   try {
@@ -159,12 +168,12 @@ router.patch("/:guildId", authenticateToken, requireGuildAccess, async (req, res
     })
   } catch (error) {
     console.error("Update guild error:", error)
-    res.status(500).json({ error: "Failed to update guild" })
+    res.status(500).json({ error: "Failed to update guild", details: error.message })
   }
 })
 
-// Delete guild (admin only)
-router.delete("/:guildId", authenticateToken, requireAdmin, async (req, res) => {
+// Delete guild
+router.delete("/:guildId", authenticateApiKey, requireAdmin, async (req, res) => {
   try {
     const { error } = await supabase.from("guilds").delete().eq("guild_id", req.params.guildId)
 
@@ -175,98 +184,113 @@ router.delete("/:guildId", authenticateToken, requireAdmin, async (req, res) => 
     res.json({ success: true, message: "Guild deleted successfully" })
   } catch (error) {
     console.error("Delete guild error:", error)
-    res.status(500).json({ error: "Failed to delete guild" })
+    res.status(500).json({ error: "Failed to delete guild", details: error.message })
   }
 })
 
-// Get guild members
-router.get("/:guildId/members", authenticateToken, requireGuildAccess, async (req, res) => {
+// Get guild commands
+router.get("/:guildId/commands", authenticateApiKey, async (req, res) => {
   try {
     const { guildId } = req.params
-    const { page = 1, limit = 20 } = req.query
-    const offset = (page - 1) * limit
 
-    const {
-      data: members,
-      error,
-      count,
-    } = await supabase
-      .from("guild_members")
-      .select("*, users(username, avatar)", { count: "exact" })
+    if (!guildId) {
+      return res.status(400).json({ error: "Guild ID is required" })
+    }
+
+    const { data, error } = await supabase
+      .from("guild_commands")
+      .select("*")
       .eq("guild_id", guildId)
-      .order("joined_at", { ascending: false })
-      .range(offset, offset + limit - 1)
+      .order("command_name")
 
     if (error) {
       throw error
     }
 
-    res.json({
-      members,
-      pagination: {
-        page: Number.parseInt(page),
-        limit: Number.parseInt(limit),
-        total: count,
-        pages: Math.ceil(count / limit),
-      },
-    })
+    res.json(data)
   } catch (error) {
-    console.error("Get guild members error:", error)
-    res.status(500).json({ error: "Failed to fetch guild members" })
+    console.error("Guild commands fetch error:", error)
+    res.status(500).json({
+      error: "Failed to fetch commands",
+      details: error.message,
+    })
   }
 })
 
-// Get guild analytics
-router.get("/:guildId/analytics", authenticateToken, requireGuildAccess, async (req, res) => {
+// Sync guild commands
+router.post("/:guildId/commands/sync", authenticateApiKey, async (req, res) => {
   try {
     const { guildId } = req.params
+    const { commands } = req.body
 
-    // Get member count over time
-    const { data: memberStats, error: memberError } = await supabase
-      .from("guild_member_stats")
-      .select("*")
-      .eq("guild_id", guildId)
-      .order("date", { ascending: false })
-      .limit(30)
-
-    if (memberError) {
-      throw memberError
+    if (!guildId) {
+      return res.status(400).json({ error: "Guild ID is required" })
     }
 
-    // Get command usage
-    const { data: commandStats, error: commandError } = await supabase
-      .from("command_usage")
-      .select("command_name, count(*)")
-      .eq("guild_id", guildId)
-      .gte("created_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
-      .group("command_name")
-      .order("count", { ascending: false })
-      .limit(10)
-
-    if (commandError) {
-      throw commandError
+    if (!commands || !Array.isArray(commands)) {
+      return res.status(400).json({ error: "Commands array is required" })
     }
 
-    // Get moderation stats
-    const { data: moderationStats, error: modError } = await supabase
-      .from("moderation_logs")
-      .select("action, count(*)")
-      .eq("guild_id", guildId)
-      .gte("created_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
-      .group("action")
+    // Sync commands to guild_commands table
+    const commandsToUpsert = commands.map((cmd) => ({
+      guild_id: guildId,
+      command_name: cmd.name,
+      is_enabled: cmd.enabled !== false,
+      usage_count: cmd.usage_count || 0,
+      updated_at: new Date().toISOString(),
+    }))
 
-    if (modError) {
-      throw modError
+    const { data, error } = await supabase
+      .from("guild_commands")
+      .upsert(commandsToUpsert, { onConflict: "guild_id,command_name" })
+      .select()
+
+    if (error) {
+      throw error
     }
 
-    res.json({
-      member_stats: memberStats || [],
-      command_usage: commandStats || [],
-      moderation_stats: moderationStats || [],
-    })
+    res.json({ success: true, synced: data.length, commands: data })
   } catch (error) {
-    console.error("Get guild analytics error:", error)
-    res.status(500).json({ error: "Failed to fetch guild analytics" })
+    console.error("Command sync error:", error)
+    res.status(500).json({
+      error: "Failed to sync commands",
+      details: error.message,
+    })
+  }
+})
+
+// Update command status
+router.put("/:guildId/commands/:commandName", authenticateApiKey, async (req, res) => {
+  try {
+    const { guildId, commandName } = req.params
+    const { enabled } = req.body
+
+    if (!guildId || !commandName) {
+      return res.status(400).json({ error: "Guild ID and command name are required" })
+    }
+
+    const { data, error } = await supabase
+      .from("guild_commands")
+      .upsert({
+        guild_id: guildId,
+        command_name: commandName,
+        is_enabled: enabled !== false,
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    res.json({ success: true, data })
+  } catch (error) {
+    console.error("Command update error:", error)
+    res.status(500).json({
+      error: "Failed to update command",
+      details: error.message,
+    })
   }
 })
 

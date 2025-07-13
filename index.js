@@ -1,27 +1,31 @@
 const express = require("express")
 const cors = require("cors")
+const helmet = require("helmet")
 const rateLimit = require("express-rate-limit")
 require("dotenv").config()
 
-const { testConnection } = require("./config/database")
-const { client } = require("./config/discord")
-
-// Import routes
-const authRoutes = require("./routes/auth")
-const userRoutes = require("./routes/users")
-const guildRoutes = require("./routes/guilds")
-const commandRoutes = require("./routes/commands")
-const moderationRoutes = require("./routes/moderation")
-const roleRoutes = require("./routes/roles")
-const giveawayRoutes = require("./routes/giveaways")
-const announcementRoutes = require("./routes/announcements")
-const reactionRoleRoutes = require("./routes/reaction-roles")
-const analyticsRoutes = require("./routes/analytics")
-const settingsRoutes = require("./routes/settings")
-const botRoutes = require("./routes/bot")
-
 const app = express()
 const PORT = process.env.PORT || 3001
+
+// Import routes
+const guildRoutes = require("./routes/guilds")
+const userRoutes = require("./routes/users")
+const botRoutes = require("./routes/bot")
+const syncDiscordRolesRoutes = require("./routes/sync-discord-roles")
+const modLogRoutes = require("./routes/mod-logs")
+const analyticsRoutes = require("./routes/analytics")
+
+// Security middleware
+app.use(helmet())
+app.use(
+  cors({
+    origin: process.env.ALLOWED_ORIGINS?.split(",") || [
+      "http://localhost:3000",
+      "https://min-dashboard-bfl.vercel.app",
+    ],
+    credentials: true,
+  }),
+)
 
 // Rate limiting
 const limiter = rateLimit({
@@ -29,64 +33,46 @@ const limiter = rateLimit({
   max: 100, // limit each IP to 100 requests per windowMs
   message: "Too many requests from this IP, please try again later.",
 })
-
-// Middleware
-app.use(cors())
-app.use(express.json())
 app.use(limiter)
+
+// Body parsing middleware
+app.use(express.json({ limit: "10mb" }))
+app.use(express.urlencoded({ extended: true, limit: "10mb" }))
 
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({
-    status: "OK",
+    status: "healthy",
     timestamp: new Date().toISOString(),
-    discord_ready: client.isReady(),
+    uptime: process.uptime(),
   })
 })
 
-// API Routes
-app.use("/api/auth", authRoutes)
-app.use("/api/users", userRoutes)
-app.use("/api/guilds", guildRoutes)
-app.use("/api/commands", commandRoutes)
-app.use("/api/moderation", moderationRoutes)
-app.use("/api/roles", roleRoutes)
-app.use("/api/giveaways", giveawayRoutes)
-app.use("/api/announcements", announcementRoutes)
-app.use("/api/reaction-roles", reactionRoleRoutes)
-app.use("/api/analytics", analyticsRoutes)
-app.use("/api/settings", settingsRoutes)
-app.use("/api/bot", botRoutes)
+// API routes
+app.use("/guilds", guildRoutes)
+app.use("/users", userRoutes)
+app.use("/bot", botRoutes)
+app.use("/sync-discord-roles", syncDiscordRolesRoutes)
+app.use("/mod-logs", modLogRoutes)
+app.use("/analytics", analyticsRoutes)
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error("Error:", err)
+  res.status(500).json({
+    error: "Internal server error",
+    message: process.env.NODE_ENV === "development" ? err.message : "Something went wrong",
+  })
+})
 
 // 404 handler
 app.use("*", (req, res) => {
   res.status(404).json({ error: "Endpoint not found" })
 })
 
-// Error handler
-app.use((error, req, res, next) => {
-  console.error("Unhandled error:", error)
-  res.status(500).json({ error: "Internal server error" })
+app.listen(PORT, () => {
+  console.log(`🚀 API Server running on port ${PORT}`)
+  console.log(`📊 Health check: http://localhost:${PORT}/health`)
 })
 
-// Start server
-const startServer = async () => {
-  try {
-    // Test database connection
-    const dbConnected = await testConnection()
-    if (!dbConnected) {
-      console.error("❌ Failed to connect to database")
-      process.exit(1)
-    }
-
-    app.listen(PORT, () => {
-      console.log(`🚀 API Server running on port ${PORT}`)
-      console.log(`📊 Health check: http://localhost:${PORT}/health`)
-    })
-  } catch (error) {
-    console.error("❌ Failed to start server:", error)
-    process.exit(1)
-  }
-}
-
-startServer()
+module.exports = app

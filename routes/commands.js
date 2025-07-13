@@ -1,11 +1,11 @@
 const express = require("express")
 const { supabase } = require("../config/database")
-const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
+const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
 
 const router = express.Router()
 
 // Get commands for a guild
-router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { data: commands, error } = await supabase
       .from("commands")
@@ -25,7 +25,7 @@ router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) 
 })
 
 // Get command usage statistics
-router.get("/:guildId/stats", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId/stats", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { data: stats, error } = await supabase
       .from("command_usage")
@@ -51,7 +51,7 @@ router.get("/:guildId/stats", authenticateToken, requireGuildAccess, async (req,
 })
 
 // Toggle command enabled/disabled
-router.patch("/:guildId/:commandName/toggle", authenticateToken, requireGuildAccess, async (req, res) => {
+router.patch("/:guildId/:commandName/toggle", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     // First check if command exists
     const { data: existingCommand, error: fetchError } = await supabase

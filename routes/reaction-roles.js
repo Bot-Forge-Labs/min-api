@@ -1,12 +1,12 @@
 const express = require("express")
 const { supabase } = require("../config/database")
-const { sendMessage, createEmbed } = require("../config/discord")
-const { client } = require("../config/discord")
-const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
+const { sendMessage, createEmbed, client } = require("../config/discord")
+const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
+
 const router = express.Router()
 
 // Get all reaction roles
-router.get("/", authenticateToken, async (req, res) => {
+router.get("/", authenticateApiKey, async (req, res) => {
   try {
     const { guild_id } = req.query
 
@@ -38,7 +38,7 @@ router.get("/", authenticateToken, async (req, res) => {
 })
 
 // Get reaction roles by guild
-router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { guildId } = req.params
 
@@ -60,7 +60,7 @@ router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) 
 })
 
 // Create reaction role message
-router.post("/", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const {
       guild_id,
@@ -165,7 +165,7 @@ router.post("/", authenticateToken, requireGuildAccess, async (req, res) => {
 })
 
 // Create reaction role
-router.post("/single", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/single", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { guild_id, channel_id, message_id, emoji, role_id, description } = req.body
 
@@ -215,7 +215,7 @@ router.post("/single", authenticateToken, requireGuildAccess, async (req, res) =
 })
 
 // Update reaction role
-router.put("/:reactionRoleId", authenticateToken, async (req, res) => {
+router.put("/:reactionRoleId", authenticateApiKey, async (req, res) => {
   try {
     const { reactionRoleId } = req.params
     const { title, description, color, role_mappings } = req.body
@@ -330,7 +330,7 @@ router.put("/:reactionRoleId", authenticateToken, async (req, res) => {
 })
 
 // Update reaction role description
-router.put("/:reactionRoleId/description", authenticateToken, async (req, res) => {
+router.put("/:reactionRoleId/description", authenticateApiKey, async (req, res) => {
   try {
     const { reactionRoleId } = req.params
     const { description } = req.body
@@ -364,50 +364,34 @@ router.put("/:reactionRoleId/description", authenticateToken, async (req, res) =
 })
 
 // Delete reaction role
-router.delete("/:reactionRoleId", authenticateToken, async (req, res) => {
+router.delete("/:guildId/:reactionRoleId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
-    const { reactionRoleId } = req.params
+    // Delete mappings first
+    await supabase.from("reaction_role_mappings").delete().eq("reaction_role_id", req.params.reactionRoleId)
 
-    // Get reaction role from database
-    const { data: reactionRole, error: fetchError } = await supabase
+    // Delete reaction role
+    const { error } = await supabase
       .from("reaction_roles")
-      .select("*")
-      .eq("id", reactionRoleId)
-      .single()
+      .delete()
+      .eq("id", req.params.reactionRoleId)
+      .eq("guild_id", req.params.guildId)
 
-    if (fetchError) throw fetchError
-
-    if (!reactionRole) {
-      return res.status(404).json({ error: "Reaction role not found" })
+    if (error) {
+      throw error
     }
-
-    // Delete Discord message
-    try {
-      const guild = await client.guilds.fetch(reactionRole.guild_id)
-      const channel = await guild.channels.fetch(reactionRole.channel_id)
-      const message = await channel.messages.fetch(reactionRole.message_id)
-      await message.delete()
-    } catch (discordError) {
-      console.error("Failed to delete Discord message:", discordError)
-    }
-
-    // Delete from database (cascades to mappings)
-    const { error } = await supabase.from("reaction_roles").delete().eq("id", reactionRoleId)
-
-    if (error) throw error
 
     res.json({
       success: true,
-      message: "Reaction role deleted successfully",
+      message: "Reaction role setup deleted successfully",
     })
   } catch (error) {
     console.error("Delete reaction role error:", error)
-    res.status(500).json({ error: "Failed to delete reaction role" })
+    res.status(500).json({ error: "Failed to delete reaction role setup" })
   }
 })
 
 // Get reaction role mappings
-router.get("/:guildId/:reactionRoleId/mappings", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId/:reactionRoleId/mappings", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { data: mappings, error } = await supabase
       .from("reaction_role_mappings")
@@ -426,7 +410,7 @@ router.get("/:guildId/:reactionRoleId/mappings", authenticateToken, requireGuild
 })
 
 // Add role mapping to existing reaction role
-router.post("/:guildId/:reactionRoleId/mappings", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId/:reactionRoleId/mappings", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const { role_id, emoji, description } = req.body
 
   if (!role_id || !emoji) {
@@ -463,7 +447,7 @@ router.post("/:guildId/:reactionRoleId/mappings", authenticateToken, requireGuil
 // Delete role mapping
 router.delete(
   "/:guildId/:reactionRoleId/mappings/:mappingId",
-  authenticateToken,
+  authenticateApiKey,
   requireGuildAccess,
   async (req, res) => {
     try {
@@ -487,32 +471,5 @@ router.delete(
     }
   },
 )
-
-// Delete reaction role setup
-router.delete("/:guildId/:reactionRoleId", authenticateToken, requireGuildAccess, async (req, res) => {
-  try {
-    // Delete mappings first
-    await supabase.from("reaction_role_mappings").delete().eq("reaction_role_id", req.params.reactionRoleId)
-
-    // Delete reaction role
-    const { error } = await supabase
-      .from("reaction_roles")
-      .delete()
-      .eq("id", req.params.reactionRoleId)
-      .eq("guild_id", req.params.guildId)
-
-    if (error) {
-      throw error
-    }
-
-    res.json({
-      success: true,
-      message: "Reaction role setup deleted successfully",
-    })
-  } catch (error) {
-    console.error("Delete reaction role error:", error)
-    res.status(500).json({ error: "Failed to delete reaction role setup" })
-  }
-})
 
 module.exports = router

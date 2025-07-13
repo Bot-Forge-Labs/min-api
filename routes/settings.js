@@ -1,11 +1,11 @@
 const express = require("express")
 const { supabase } = require("../config/database")
-const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
+const { authenticateApiKey, requireGuildAccess } = require("../middleware/auth")
 
 const router = express.Router()
 
 // Get guild settings
-router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.get("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const { data: settings, error } = await supabase
       .from("guild_settings")
@@ -47,7 +47,7 @@ router.get("/:guildId", authenticateToken, requireGuildAccess, async (req, res) 
 })
 
 // Update guild settings
-router.patch("/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+router.patch("/:guildId", authenticateApiKey, requireGuildAccess, async (req, res) => {
   const {
     prefix,
     welcome_enabled,
@@ -140,7 +140,7 @@ router.patch("/:guildId", authenticateToken, requireGuildAccess, async (req, res
 })
 
 // Reset guild settings to defaults
-router.post("/:guildId/reset", authenticateToken, requireGuildAccess, async (req, res) => {
+router.post("/:guildId/reset", authenticateApiKey, requireGuildAccess, async (req, res) => {
   try {
     const defaultSettings = {
       prefix: "!",
@@ -182,7 +182,7 @@ router.post("/:guildId/reset", authenticateToken, requireGuildAccess, async (req
 })
 
 // Get bot global settings (admin only)
-router.get("/bot/global", authenticateToken, async (req, res) => {
+router.get("/bot/global", authenticateApiKey, async (req, res) => {
   if (!req.user.is_admin) {
     return res.status(403).json({ error: "Admin access required" })
   }
@@ -217,7 +217,7 @@ router.get("/bot/global", authenticateToken, async (req, res) => {
 })
 
 // Update bot global settings (admin only)
-router.patch("/bot/global", authenticateToken, async (req, res) => {
+router.patch("/bot/global", authenticateApiKey, async (req, res) => {
   if (!req.user.is_admin) {
     return res.status(403).json({ error: "Admin access required" })
   }
