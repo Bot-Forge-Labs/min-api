@@ -1,7 +1,8 @@
 const express = require("express")
-const supabase = require("../config/database")
+const { supabase } = require("../config/database")
+const { discordAPI, createEmbed } = require("../config/discord")
 const { client } = require("../config/discord")
-const { authenticateToken } = require("../middleware/auth")
+const { authenticateToken, requireGuildAccess } = require("../middleware/auth")
 const router = express.Router()
 
 // Get all reaction roles
@@ -36,8 +37,30 @@ router.get("/", authenticateToken, async (req, res) => {
   }
 })
 
+// Get reaction roles by guild
+router.get("/guild/:guildId", authenticateToken, requireGuildAccess, async (req, res) => {
+  try {
+    const { guildId } = req.params
+
+    const { data: reactionRoles, error } = await supabase
+      .from("reaction_roles")
+      .select("*")
+      .eq("guild_id", guildId)
+      .order("created_at", { ascending: false })
+
+    if (error) {
+      throw error
+    }
+
+    res.json({ reaction_roles: reactionRoles })
+  } catch (error) {
+    console.error("Get reaction roles error:", error)
+    res.status(500).json({ error: "Failed to fetch reaction roles" })
+  }
+})
+
 // Create reaction role message
-router.post("/", authenticateToken, async (req, res) => {
+router.post("/", authenticateToken, requireGuildAccess, async (req, res) => {
   try {
     const {
       guild_id,
@@ -138,6 +161,63 @@ router.post("/", authenticateToken, async (req, res) => {
   } catch (error) {
     console.error("Create reaction role error:", error)
     res.status(500).json({ error: "Failed to create reaction role message" })
+  }
+})
+
+// Create reaction role
+router.post("/single", authenticateToken, requireGuildAccess, async (req, res) => {
+  try {
+    const {
+      guild_id,
+      channel_id,
+      message_id,
+      emoji,
+      role_id,
+      description
+    } = req.body
+
+    if (!guild_id || !channel_id || !message_id || !emoji || !role_id) {
+      return res.status(400).json({ error: 'All fields are required' })
+    }
+
+    // Save reaction role to database
+    const { data: reactionRole, error } = await supabase
+      .from('reaction_roles')
+      .insert({
+        guild_id,
+        channel_id,
+        message_id,
+        emoji,
+        role_id,
+        description,
+        created_by: req.user.discord_id
+      })
+      .select()
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    // Add reaction to message
+    try {
+      const message = await discordAPI.client.channels.cache.get(channel_id)?.messages.fetch(message_id)
+      if (message) {
+        await message.react(emoji)
+      }
+    } catch (discordError) {
+      console.error('Failed to add reaction:', discordError)
+      // Continue even if reaction fails
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Reaction role created successfully',
+      reaction_role: reactionRole
+    })
+  } catch (error) {
+    console.error('Create reaction role error:', error)
+    res.status(500).json({ error: 'Failed to create reaction role' })
   }
 })
 
@@ -253,6 +333,40 @@ router.put("/:reactionRoleId", authenticateToken, async (req, res) => {
   } catch (error) {
     console.error("Update reaction role error:", error)
     res.status(500).json({ error: "Failed to update reaction role" })
+  }
+})
+
+// Update reaction role description
+router.put("/:reactionRoleId/description", authenticateToken, async (req, res) => {
+  try {
+    const { reactionRoleId } = req.params
+    const { description } = req.body
+
+    const { data: reactionRole, error } = await supabase
+      .from('reaction_roles')
+      .update({
+        description,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', reactionRoleId)
+      .select()
+      .single()
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({ error: 'Reaction role not found' })
+      }
+      throw error
+    }
+
+    res.json({
+      success: true,
+      message: 'Reaction role updated successfully',
+      reaction_role: reactionRole
+    })
+  } catch (error) {
+    console.error('Update reaction role error:', error)
+    res.status(500).json({ error: 'Failed to update reaction role' })
   }
 })
 

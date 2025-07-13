@@ -1,235 +1,292 @@
-const express = require("express")
-const supabase = require("../config/database")
-const { client } = require("../config/discord")
-const { authenticateToken } = require("../middleware/auth")
+const express = require('express')
+const { supabase } = require('../config/database')
+const { discordAPI } = require('../config/discord')
+const { authenticateToken, requireGuildAccess } = require('../middleware/auth')
+
 const router = express.Router()
 
-// Get moderation logs with filtering
-router.get("/logs", authenticateToken, async (req, res) => {
+// Get moderation logs
+router.get('/logs', authenticateToken, async (req, res) => {
   try {
-    const { guild_id, user_id, moderator_id, action, page = 1, limit = 50 } = req.query
-
+    const { guild_id, action, page = 1, limit = 20 } = req.query
     const offset = (page - 1) * limit
 
     let query = supabase
-      .from("moderation_logs")
-      .select(`
-        *,
-        user_profiles!moderation_logs_user_id_fkey(username, avatar),
-        moderator:user_profiles!moderation_logs_moderator_id_fkey(username, avatar)
-      `)
-      .range(offset, offset + limit - 1)
-      .order("created_at", { ascending: false })
+      .from('moderation_logs')
+      .select('*, users!moderation_logs_moderator_id_fkey(username, avatar)', { count: 'exact' })
 
     if (guild_id) {
-      query = query.eq("guild_id", guild_id)
-    }
-
-    if (user_id) {
-      query = query.eq("user_id", user_id)
-    }
-
-    if (moderator_id) {
-      query = query.eq("moderator_id", moderator_id)
+      query = query.eq('guild_id', guild_id)
     }
 
     if (action) {
-      query = query.eq("action", action)
+      query = query.eq('action', action)
     }
 
-    const { data: logs, error } = await query
+    const { data: logs, error, count } = await query
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1)
 
-    if (error) throw error
+    if (error) {
+      throw error
+    }
 
     res.json({
-      logs: logs || [],
+      logs,
       pagination: {
-        page: Number.parseInt(page),
-        limit: Number.parseInt(limit),
-        total: logs?.length || 0,
-      },
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count,
+        pages: Math.ceil(count / limit)
+      }
     })
   } catch (error) {
-    console.error("Get moderation logs error:", error)
-    res.status(500).json({ error: "Failed to fetch moderation logs" })
+    console.error('Get moderation logs error:', error)
+    res.status(500).json({ error: 'Failed to fetch moderation logs' })
+  }
+})
+
+// Get logs by guild
+router.get('/logs/guild/:guildId', authenticateToken, requireGuildAccess, async (req, res) => {
+  try {
+    const { guildId } = req.params
+    const { action, page = 1, limit = 20 } = req.query
+    const offset = (page - 1) * limit
+
+    let query = supabase
+      .from('moderation_logs')
+      .select('*, users!moderation_logs_moderator_id_fkey(username, avatar)', { count: 'exact' })
+      .eq('guild_id', guildId)
+
+    if (action) {
+      query = query.eq('action', action)
+    }
+
+    const { data: logs, error, count } = await query
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1)
+
+    if (error) {
+      throw error
+    }
+
+    res.json({
+      logs,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count,
+        pages: Math.ceil(count / limit)
+      }
+    })
+  } catch (error) {
+    console.error('Get guild moderation logs error:', error)
+    res.status(500).json({ error: 'Failed to fetch guild moderation logs' })
   }
 })
 
 // Execute punishment
-router.post("/punish", authenticateToken, async (req, res) => {
+router.post('/punish', authenticateToken, requireGuildAccess, async (req, res) => {
   try {
     const { guild_id, user_id, action, reason, duration } = req.body
 
     if (!guild_id || !user_id || !action || !reason) {
-      return res.status(400).json({
-        error: "Missing required fields: guild_id, user_id, action, reason",
+      return res.status(400).json({ error: 'Guild ID, user ID, action, and reason are required' })
+    }
+
+    // Validate action
+    const validActions = ['warn', 'timeout', 'kick', 'ban']
+    if (!validActions.includes(action)) {
+      return res.status(400).json({ error: 'Invalid action' })
+    }
+
+    // Execute punishment via Discord API
+    const result = await discordAPI.punishMember(guild_id, user_id, action, reason, duration)
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.error })
+    }
+
+    // Log the punishment
+    const { data: log, error } = await supabase
+      .from('moderation_logs')
+      .insert({
+        guild_id,
+        user_id,
+        moderator_id: req.user.discord_id,
+        action,
+        reason,
+        duration: duration || null,
+        executed: true
       })
+      .select()
+      .single()
+
+    if (error) {
+      throw error
     }
 
-    // Get Discord guild and member
-    const guild = await client.guilds.fetch(guild_id)
-    const member = await guild.members.fetch(user_id)
-
-    if (!member) {
-      return res.status(404).json({ error: "Member not found in guild" })
-    }
-
-    let success = false
-    let details = {}
-
-    // Execute punishment based on action
-    switch (action) {
-      case "warn":
-        success = true
-        details = { reason }
-        break
-
-      case "timeout":
-        if (!duration) {
-          return res.status(400).json({ error: "Duration required for timeout" })
-        }
-        const timeoutDuration = Number.parseInt(duration) * 60 * 1000 // Convert minutes to ms
-        await member.timeout(timeoutDuration, reason)
-        success = true
-        details = { reason, duration: `${duration} minutes` }
-        break
-
-      case "kick":
-        await member.kick(reason)
-        success = true
-        details = { reason }
-        break
-
-      case "ban":
-        await member.ban({ reason, deleteMessageDays: 1 })
-        success = true
-        details = { reason, deleteMessageDays: 1 }
-        break
-
-      default:
-        return res.status(400).json({ error: "Invalid action type" })
-    }
-
-    if (success) {
-      // Log the moderation action
-      const { data: log, error: logError } = await supabase
-        .from("moderation_logs")
-        .insert({
-          guild_id,
-          user_id,
-          moderator_id: req.user.id,
-          action,
-          reason,
-          duration,
-          details,
-          created_at: new Date().toISOString(),
-        })
-        .select()
-        .single()
-
-      if (logError) {
-        console.error("Failed to log moderation action:", logError)
-      }
-
-      res.json({
-        success: true,
-        message: `Successfully ${action}ed user`,
-        log,
-      })
-    }
-  } catch (error) {
-    console.error("Punishment execution error:", error)
-    res.status(500).json({
-      error: `Failed to execute ${req.body.action}`,
-      details: error.message,
+    res.json({
+      success: true,
+      message: result.message,
+      log
     })
+  } catch (error) {
+    console.error('Execute punishment error:', error)
+    res.status(500).json({ error: 'Failed to execute punishment' })
   }
 })
 
 // Get moderation statistics
-router.get("/stats", authenticateToken, async (req, res) => {
+router.get('/stats', authenticateToken, async (req, res) => {
   try {
     const { guild_id, days = 30 } = req.query
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
 
-    const startDate = new Date()
-    startDate.setDate(startDate.getDate() - days)
-
-    let query = supabase.from("moderation_logs").select("action, created_at").gte("created_at", startDate.toISOString())
+    let query = supabase
+      .from('moderation_logs')
+      .select('action, count(*)')
+      .gte('created_at', startDate)
 
     if (guild_id) {
-      query = query.eq("guild_id", guild_id)
+      query = query.eq('guild_id', guild_id)
     }
 
-    const { data: logs, error } = await query
+    const { data: stats, error } = await query.group('action')
 
-    if (error) throw error
-
-    // Calculate statistics
-    const stats = {
-      total: logs.length,
-      warns: logs.filter((l) => l.action === "warn").length,
-      timeouts: logs.filter((l) => l.action === "timeout").length,
-      kicks: logs.filter((l) => l.action === "kick").length,
-      bans: logs.filter((l) => l.action === "ban").length,
+    if (error) {
+      throw error
     }
 
-    // Group by day for chart data
-    const dailyStats = logs.reduce((acc, log) => {
-      const date = log.created_at.split("T")[0]
-      if (!acc[date]) {
-        acc[date] = { date, count: 0 }
-      }
-      acc[date].count++
-      return acc
-    }, {})
+    // Get total count
+    let totalQuery = supabase
+      .from('moderation_logs')
+      .select('count(*)')
+      .gte('created_at', startDate)
+
+    if (guild_id) {
+      totalQuery = totalQuery.eq('guild_id', guild_id)
+    }
+
+    const { data: totalData, error: totalError } = await totalQuery.single()
+
+    if (totalError) {
+      throw totalError
+    }
 
     res.json({
-      stats,
-      dailyStats: Object.values(dailyStats),
+      stats: stats || [],
+      total: totalData?.count || 0,
+      period_days: parseInt(days)
     })
   } catch (error) {
-    console.error("Get moderation stats error:", error)
-    res.status(500).json({ error: "Failed to fetch moderation statistics" })
+    console.error('Get moderation stats error:', error)
+    res.status(500).json({ error: 'Failed to fetch moderation statistics' })
   }
 })
 
 // Get active punishments
-router.get("/active", authenticateToken, async (req, res) => {
+router.get('/active', authenticateToken, async (req, res) => {
   try {
     const { guild_id } = req.query
 
     let query = supabase
-      .from("moderation_logs")
-      .select(`
-        *,
-        user_profiles!moderation_logs_user_id_fkey(username, avatar)
-      `)
-      .in("action", ["timeout", "ban"])
-      .order("created_at", { ascending: false })
+      .from('moderation_logs')
+      .select('*')
+      .in('action', ['timeout', 'ban'])
+      .eq('executed', true)
 
     if (guild_id) {
-      query = query.eq("guild_id", guild_id)
+      query = query.eq('guild_id', guild_id)
     }
 
-    const { data: activePunishments, error } = await query
+    // For timeouts, only show those that haven't expired
+    const { data: punishments, error } = await query
+      .order('created_at', { ascending: false })
 
-    if (error) throw error
+    if (error) {
+      throw error
+    }
 
     // Filter out expired timeouts
-    const now = new Date()
-    const filtered = activePunishments.filter((punishment) => {
-      if (punishment.action === "timeout" && punishment.duration) {
-        const createdAt = new Date(punishment.created_at)
-        const expiresAt = new Date(createdAt.getTime() + punishment.duration * 60 * 1000)
-        return expiresAt > now
+    const activePunishments = punishments.filter(punishment => {
+      if (punishment.action === 'timeout' && punishment.duration) {
+        const expiryTime = new Date(punishment.created_at).getTime() + (punishment.duration * 1000)
+        return expiryTime > Date.now()
       }
-      return true // Keep bans and other permanent actions
+      return true
     })
 
-    res.json({ activePunishments: filtered })
+    res.json({ punishments: activePunishments })
   } catch (error) {
-    console.error("Get active punishments error:", error)
-    res.status(500).json({ error: "Failed to fetch active punishments" })
+    console.error('Get active punishments error:', error)
+    res.status(500).json({ error: 'Failed to fetch active punishments' })
+  }
+})
+
+// Remove punishment (unban, remove timeout)
+router.post('/remove/:logId', authenticateToken, requireGuildAccess, async (req, res) => {
+  try {
+    const { logId } = req.params
+    const { reason } = req.body
+
+    // Get the original punishment
+    const { data: originalLog, error: fetchError } = await supabase
+      .from('moderation_logs')
+      .select('*')
+      .eq('id', logId)
+      .single()
+
+    if (fetchError) {
+      if (fetchError.code === 'PGRST116') {
+        return res.status(404).json({ error: 'Punishment not found' })
+      }
+      throw fetchError
+    }
+
+    // Only bans can be removed via API
+    if (originalLog.action !== 'ban') {
+      return res.status(400).json({ error: 'Only bans can be removed via API' })
+    }
+
+    // Remove ban via Discord API
+    try {
+      const guild = await discordAPI.getGuild(originalLog.guild_id)
+      if (guild) {
+        await guild.members.unban(originalLog.user_id, reason || 'Ban removed via dashboard')
+      }
+    } catch (discordError) {
+      console.error('Discord unban error:', discordError)
+      // Continue even if Discord API fails
+    }
+
+    // Log the removal
+    const { data: removalLog, error } = await supabase
+      .from('moderation_logs')
+      .insert({
+        guild_id: originalLog.guild_id,
+        user_id: originalLog.user_id,
+        moderator_id: req.user.discord_id,
+        action: 'unban',
+        reason: reason || 'Ban removed via dashboard',
+        executed: true,
+        related_log_id: logId
+      })
+      .select()
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    res.json({
+      success: true,
+      message: 'Punishment removed successfully',
+      log: removalLog
+    })
+  } catch (error) {
+    console.error('Remove punishment error:', error)
+    res.status(500).json({ error: 'Failed to remove punishment' })
   }
 })
 

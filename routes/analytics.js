@@ -1,239 +1,145 @@
-const express = require("express")
-const supabase = require("../config/database")
-const { authenticateToken } = require("../middleware/auth")
+const express = require('express')
+const { supabase } = require('../config/database')
+const { authenticateToken } = require('../middleware/auth')
+
 const router = express.Router()
 
 // Get dashboard analytics
-router.get("/dashboard", authenticateToken, async (req, res) => {
+router.get('/dashboard', authenticateToken, async (req, res) => {
   try {
-    const { guild_id, days = 30 } = req.query
-
-    const startDate = new Date()
-    startDate.setDate(startDate.getDate() - days)
+    const { days = 30 } = req.query
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
 
     // Get total counts
-    let userQuery = supabase.from("user_profiles").select("id", { count: "exact" })
-    let guildQuery = supabase.from("guilds").select("id", { count: "exact" })
-    let commandQuery = supabase.from("bot_commands").select("id", { count: "exact" })
+    const { data: userCount, error: userError } = await supabase
+      .from('users')
+      .select('count(*)')
+      .single()
 
-    if (guild_id) {
-      userQuery = userQuery.eq("guild_id", guild_id)
-      guildQuery = guildQuery.eq("guild_id", guild_id)
-      commandQuery = commandQuery.eq("guild_id", guild_id)
-    }
+    if (userError) throw userError
 
-    const [{ count: totalUsers }, { count: totalGuilds }, { count: totalCommands }] = await Promise.all([
-      userQuery,
-      guildQuery,
-      commandQuery,
-    ])
+    const { data: guildCount, error: guildError } = await supabase
+      .from('guilds')
+      .select('count(*)')
+      .single()
 
-    // Get recent activity counts
-    let moderationQuery = supabase
-      .from("moderation_logs")
-      .select("id", { count: "exact" })
-      .gte("created_at", startDate.toISOString())
+    if (guildError) throw guildError
 
-    let commandUsageQuery = supabase
-      .from("command_usage_stats")
-      .select("usage_count")
-      .gte("date", startDate.toISOString().split("T")[0])
+    const { data: commandCount, error: commandError } = await supabase
+      .from('command_usage')
+      .select('count(*)')
+      .gte('created_at', startDate)
+      .single()
 
-    if (guild_id) {
-      moderationQuery = moderationQuery.eq("guild_id", guild_id)
-      commandUsageQuery = commandUsageQuery.eq("guild_id", guild_id)
-    }
+    if (commandError) throw commandError
 
-    const [{ count: recentModerations }, { data: commandUsageData }] = await Promise.all([
-      moderationQuery,
-      commandUsageQuery,
-    ])
+    const { data: moderationCount, error: moderationError } = await supabase
+      .from('moderation_logs')
+      .select('count(*)')
+      .gte('created_at', startDate)
+      .single()
 
-    const totalCommandUsage = commandUsageData?.reduce((sum, stat) => sum + (stat.usage_count || 0), 0) || 0
-
-    // Get growth data
-    let memberGrowthQuery = supabase
-      .from("guild_member_stats")
-      .select("date, member_count")
-      .gte("date", startDate.toISOString().split("T")[0])
-      .order("date", { ascending: true })
-
-    if (guild_id) {
-      memberGrowthQuery = memberGrowthQuery.eq("guild_id", guild_id)
-    }
-
-    const { data: memberGrowth } = await memberGrowthQuery
+    if (moderationError) throw moderationError
 
     res.json({
-      totals: {
-        users: totalUsers || 0,
-        guilds: totalGuilds || 0,
-        commands: totalCommands || 0,
-        moderations: recentModerations || 0,
-        commandUsage: totalCommandUsage,
-      },
-      growth: {
-        members: memberGrowth || [],
-      },
+      total_users: userCount?.count || 0,
+      total_guilds: guildCount?.count || 0,
+      commands_used: commandCount?.count || 0,
+      moderation_actions: moderationCount?.count || 0,
+      period_days: parseInt(days)
     })
   } catch (error) {
-    console.error("Get dashboard analytics error:", error)
-    res.status(500).json({ error: "Failed to fetch dashboard analytics" })
+    console.error('Get dashboard analytics error:', error)
+    res.status(500).json({ error: 'Failed to fetch dashboard analytics' })
   }
 })
 
 // Get user analytics
-router.get("/users", authenticateToken, async (req, res) => {
+router.get('/users', authenticateToken, async (req, res) => {
   try {
-    const { guild_id, days = 30 } = req.query
+    const { days = 30 } = req.query
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
 
-    const startDate = new Date()
-    startDate.setDate(startDate.getDate() - days)
+    // Get new users over time
+    const { data: newUsers, error: newUsersError } = await supabase
+      .from('users')
+      .select('created_at')
+      .gte('created_at', startDate)
+      .order('created_at')
 
-    // Get user activity stats
-    let messageStatsQuery = supabase
-      .from("user_message_stats")
-      .select("date, user_id, message_count")
-      .gte("date", startDate.toISOString().split("T")[0])
+    if (newUsersError) throw newUsersError
 
-    if (guild_id) {
-      messageStatsQuery = messageStatsQuery.eq("guild_id", guild_id)
-    }
+    // Group by date
+    const dailyNewUsers = newUsers.reduce((acc, user) => {
+      const date = user.created_at.split('T')[0]
+      acc[date] = (acc[date] || 0) + 1
+      return acc
+    }, {})
 
-    const { data: messageStats } = await messageStatsQuery
+    // Get active users
+    const { data: activeUsers, error: activeError } = await supabase
+      .from('command_usage')
+      .select('user_id')
+      .gte('created_at', startDate)
+      .group('user_id')
 
-    // Get top users by message count
-    const userMessageCounts = {}
-    messageStats?.forEach((stat) => {
-      if (!userMessageCounts[stat.user_id]) {
-        userMessageCounts[stat.user_id] = 0
-      }
-      userMessageCounts[stat.user_id] += stat.message_count
-    })
-
-    const topUsers = Object.entries(userMessageCounts)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 10)
-      .map(([user_id, message_count]) => ({ user_id, message_count }))
-
-    // Get user profiles for top users
-    if (topUsers.length > 0) {
-      const { data: userProfiles } = await supabase
-        .from("user_profiles")
-        .select("user_id, username, avatar")
-        .in(
-          "user_id",
-          topUsers.map((u) => u.user_id),
-        )
-
-      topUsers.forEach((user) => {
-        const profile = userProfiles?.find((p) => p.user_id === user.user_id)
-        if (profile) {
-          user.username = profile.username
-          user.avatar = profile.avatar
-        }
-      })
-    }
-
-    // Get daily activity
-    const dailyActivity = {}
-    messageStats?.forEach((stat) => {
-      if (!dailyActivity[stat.date]) {
-        dailyActivity[stat.date] = { date: stat.date, messages: 0, activeUsers: new Set() }
-      }
-      dailyActivity[stat.date].messages += stat.message_count
-      dailyActivity[stat.date].activeUsers.add(stat.user_id)
-    })
-
-    const dailyActivityArray = Object.values(dailyActivity).map((day) => ({
-      date: day.date,
-      messages: day.messages,
-      activeUsers: day.activeUsers.size,
-    }))
+    if (activeError) throw activeError
 
     res.json({
-      topUsers,
-      dailyActivity: dailyActivityArray,
+      daily_new_users: dailyNewUsers,
+      active_users: activeUsers?.length || 0,
+      total_new_users: newUsers.length
     })
   } catch (error) {
-    console.error("Get user analytics error:", error)
-    res.status(500).json({ error: "Failed to fetch user analytics" })
+    console.error('Get user analytics error:', error)
+    res.status(500).json({ error: 'Failed to fetch user analytics' })
   }
 })
 
 // Get command usage analytics
-router.get("/commands", authenticateToken, async (req, res) => {
+router.get('/commands', authenticateToken, async (req, res) => {
   try {
     const { guild_id, days = 30 } = req.query
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
 
-    const startDate = new Date()
-    startDate.setDate(startDate.getDate() - days)
-
-    // Get command usage stats
-    let usageQuery = supabase
-      .from("command_usage_stats")
-      .select(`
-        date,
-        command_name,
-        usage_count,
-        bot_commands(name, category)
-      `)
-      .gte("date", startDate.toISOString().split("T")[0])
+    let query = supabase
+      .from('command_usage')
+      .select('command_name, created_at')
+      .gte('created_at', startDate)
 
     if (guild_id) {
-      usageQuery = usageQuery.eq("guild_id", guild_id)
+      query = query.eq('guild_id', guild_id)
     }
 
-    const { data: usageStats } = await usageQuery
+    const { data: usage, error } = await query.order('created_at')
 
-    // Get top commands
-    const commandUsageCounts = {}
-    usageStats?.forEach((stat) => {
-      if (!commandUsageCounts[stat.command_name]) {
-        commandUsageCounts[stat.command_name] = {
-          name: stat.command_name,
-          category: stat.bot_commands?.category || "Unknown",
-          usage_count: 0,
-        }
+    if (error) throw error
+
+    // Group by command
+    const commandStats = usage.reduce((acc, record) => {
+      const command = record.command_name
+      if (!acc[command]) {
+        acc[command] = { count: 0, daily: {} }
       }
-      commandUsageCounts[stat.command_name].usage_count += stat.usage_count
-    })
+      acc[command].count++
 
-    const topCommands = Object.values(commandUsageCounts)
-      .sort((a, b) => b.usage_count - a.usage_count)
-      .slice(0, 10)
+      const date = record.created_at.split('T')[0]
+      acc[command].daily[date] = (acc[command].daily[date] || 0) + 1
+      return acc
+    }, {})
 
-    // Get daily usage
-    const dailyUsage = {}
-    usageStats?.forEach((stat) => {
-      if (!dailyUsage[stat.date]) {
-        dailyUsage[stat.date] = { date: stat.date, usage_count: 0 }
-      }
-      dailyUsage[stat.date].usage_count += stat.usage_count
-    })
-
-    const dailyUsageArray = Object.values(dailyUsage)
-
-    // Get usage by category
-    const categoryUsage = {}
-    usageStats?.forEach((stat) => {
-      const category = stat.bot_commands?.category || "Unknown"
-      if (!categoryUsage[category]) {
-        categoryUsage[category] = { category, usage_count: 0 }
-      }
-      categoryUsage[category].usage_count += stat.usage_count
-    })
-
-    const categoryUsageArray = Object.values(categoryUsage)
+    // Sort by usage
+    const sortedCommands = Object.entries(commandStats)
+      .map(([name, stats]) => ({ name, ...stats }))
+      .sort((a, b) => b.count - a.count)
 
     res.json({
-      topCommands,
-      dailyUsage: dailyUsageArray,
-      categoryUsage: categoryUsageArray,
+      command_stats: sortedCommands,
+      total_usage: usage.length
     })
   } catch (error) {
-    console.error("Get command analytics error:", error)
-    res.status(500).json({ error: "Failed to fetch command analytics" })
+    console.error('Get command analytics error:', error)
+    res.status(500).json({ error: 'Failed to fetch command analytics' })
   }
 })
 

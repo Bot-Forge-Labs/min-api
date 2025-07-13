@@ -1,6 +1,6 @@
 const express = require('express')
 const { supabase } = require('../config/database')
-const { client } = require('../config/discord')
+const { discordAPI } = require('../config/discord')
 const { authenticateToken, requireGuildAccess } = require('../middleware/auth')
 
 const router = express.Router()
@@ -8,44 +8,16 @@ const router = express.Router()
 // Get all guilds
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    let query = supabase
+    const { data: guilds, error } = await supabase
       .from('guilds')
       .select('*')
-      .order('created_at', { ascending: false })
+      .order('name')
 
-    // Non-admin users only see guilds they have access to
-    if (!req.user.is_admin) {
-      const { data: memberGuilds, error: memberError } = await supabase
-        .from('guild_members')
-        .select('guild_id')
-        .eq('user_id', req.user.discord_id)
-
-      if (memberError) throw memberError
-
-      const guildIds = memberGuilds.map(m => m.guild_id)
-      if (guildIds.length === 0) {
-        return res.json({ success: true, guilds: [] })
-      }
-
-      query = query.in('guild_id', guildIds)
+    if (error) {
+      throw error
     }
 
-    const { data: guilds, error } = await query
-
-    if (error) throw error
-
-    res.json({
-      success: true,
-      guilds: guilds.map(guild => ({
-        id: guild.id,
-        guild_id: guild.guild_id,
-        name: guild.name,
-        icon: guild.icon,
-        member_count: guild.member_count,
-        is_active: guild.is_active,
-        created_at: guild.created_at
-      }))
-    })
+    res.json({ guilds })
   } catch (error) {
     console.error('Get guilds error:', error)
     res.status(500).json({ error: 'Failed to fetch guilds' })
@@ -55,19 +27,22 @@ router.get('/', authenticateToken, async (req, res) => {
 // Get guild by ID
 router.get('/:guildId', authenticateToken, requireGuildAccess, async (req, res) => {
   try {
-    res.json({
-      success: true,
-      guild: {
-        id: req.guild.id,
-        guild_id: req.guild.guild_id,
-        name: req.guild.name,
-        icon: req.guild.icon,
-        member_count: req.guild.member_count,
-        is_active: req.guild.is_active,
-        created_at: req.guild.created_at,
-        settings: req.guild.settings
+    const { guildId } = req.params
+
+    const { data: guild, error } = await supabase
+      .from('guilds')
+      .select('*')
+      .eq('guild_id', guildId)
+      .single()
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({ error: 'Guild not found' })
       }
-    })
+      throw error
+    }
+
+    res.json({ guild })
   } catch (error) {
     console.error('Get guild error:', error)
     res.status(500).json({ error: 'Failed to fetch guild' })
@@ -76,12 +51,11 @@ router.get('/:guildId', authenticateToken, requireGuildAccess, async (req, res) 
 
 // Sync guild from Discord
 router.post('/:guildId/sync', authenticateToken, requireGuildAccess, async (req, res) => {
-  const { guildId } = req.params
-
   try {
-    // Get guild from Discord
-    const discordGuild = await client.guilds.fetch(guildId)
-    
+    const { guildId } = req.params
+
+    // Get guild info from Discord
+    const discordGuild = await discordAPI.getGuild(guildId)
     if (!discordGuild) {
       return res.status(404).json({ error: 'Guild not found on Discord' })
     }
@@ -89,28 +63,25 @@ router.post('/:guildId/sync', authenticateToken, requireGuildAccess, async (req,
     // Update guild in database
     const { data: guild, error } = await supabase
       .from('guilds')
-      .update({
+      .upsert({
+        guild_id: guildId,
         name: discordGuild.name,
         icon: discordGuild.icon,
+        owner_id: discordGuild.ownerId,
         member_count: discordGuild.memberCount,
         updated_at: new Date().toISOString()
       })
-      .eq('guild_id', guildId)
       .select()
       .single()
 
-    if (error) throw error
+    if (error) {
+      throw error
+    }
 
-    res.json({
-      success: true,
+    res.json({ 
+      success: true, 
       message: 'Guild synced successfully',
-      guild: {
-        id: guild.id,
-        guild_id: guild.guild_id,
-        name: guild.name,
-        icon: guild.icon,
-        member_count: guild.member_count
-      }
+      guild 
     })
   } catch (error) {
     console.error('Sync guild error:', error)
@@ -120,26 +91,31 @@ router.post('/:guildId/sync', authenticateToken, requireGuildAccess, async (req,
 
 // Update guild settings
 router.put('/:guildId/settings', authenticateToken, requireGuildAccess, async (req, res) => {
-  const { guildId } = req.params
-  const settings = req.body
-
   try {
+    const { guildId } = req.params
+    const { prefix, welcome_channel, moderation_enabled, auto_role } = req.body
+
     const { data: guild, error } = await supabase
       .from('guilds')
       .update({
-        settings: settings,
+        prefix,
+        welcome_channel,
+        moderation_enabled,
+        auto_role,
         updated_at: new Date().toISOString()
       })
       .eq('guild_id', guildId)
       .select()
       .single()
 
-    if (error) throw error
+    if (error) {
+      throw error
+    }
 
-    res.json({
-      success: true,
+    res.json({ 
+      success: true, 
       message: 'Guild settings updated successfully',
-      settings: guild.settings
+      guild 
     })
   } catch (error) {
     console.error('Update guild settings error:', error)
@@ -149,38 +125,88 @@ router.put('/:guildId/settings', authenticateToken, requireGuildAccess, async (r
 
 // Get guild members
 router.get('/:guildId/members', authenticateToken, requireGuildAccess, async (req, res) => {
-  const { guildId } = req.params
-
   try {
-    const { data: members, error } = await supabase
+    const { guildId } = req.params
+    const { page = 1, limit = 20 } = req.query
+    const offset = (page - 1) * limit
+
+    const { data: members, error, count } = await supabase
       .from('guild_members')
-      .select(`
-        *,
-        users (
-          discord_id,
-          username,
-          discriminator,
-          avatar
-        )
-      `)
+      .select('*, users(username, avatar)', { count: 'exact' })
       .eq('guild_id', guildId)
       .order('joined_at', { ascending: false })
+      .range(offset, offset + limit - 1)
 
-    if (error) throw error
+    if (error) {
+      throw error
+    }
 
     res.json({
-      success: true,
-      members: members.map(member => ({
-        user_id: member.user_id,
-        guild_id: member.guild_id,
-        roles: member.roles,
-        joined_at: member.joined_at,
-        user: member.users
-      }))
+      members,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count,
+        pages: Math.ceil(count / limit)
+      }
     })
   } catch (error) {
     console.error('Get guild members error:', error)
     res.status(500).json({ error: 'Failed to fetch guild members' })
+  }
+})
+
+// Get guild analytics
+router.get('/:guildId/analytics', authenticateToken, requireGuildAccess, async (req, res) => {
+  try {
+    const { guildId } = req.params
+
+    // Get member count over time
+    const { data: memberStats, error: memberError } = await supabase
+      .from('guild_member_stats')
+      .select('*')
+      .eq('guild_id', guildId)
+      .order('date', { ascending: false })
+      .limit(30)
+
+    if (memberError) {
+      throw memberError
+    }
+
+    // Get command usage
+    const { data: commandStats, error: commandError } = await supabase
+      .from('command_usage')
+      .select('command_name, count(*)')
+      .eq('guild_id', guildId)
+      .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+      .group('command_name')
+      .order('count', { ascending: false })
+      .limit(10)
+
+    if (commandError) {
+      throw commandError
+    }
+
+    // Get moderation stats
+    const { data: moderationStats, error: modError } = await supabase
+      .from('moderation_logs')
+      .select('action, count(*)')
+      .eq('guild_id', guildId)
+      .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+      .group('action')
+
+    if (modError) {
+      throw modError
+    }
+
+    res.json({
+      member_stats: memberStats || [],
+      command_usage: commandStats || [],
+      moderation_stats: moderationStats || []
+    })
+  } catch (error) {
+    console.error('Get guild analytics error:', error)
+    res.status(500).json({ error: 'Failed to fetch guild analytics' })
   }
 })
 
