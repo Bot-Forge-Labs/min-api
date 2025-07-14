@@ -15,9 +15,9 @@ router.get("/", authenticateApiKey, async (req, res) => {
       return res.status(500).json({ error: "Failed to fetch guilds" })
     }
 
-    res.json(guilds || [])
+    res.json({ guilds })
   } catch (error) {
-    console.error("Error in GET /guilds:", error)
+    console.error("Guilds fetch error:", error)
     res.status(500).json({ error: "Internal server error" })
   }
 })
@@ -36,7 +36,7 @@ router.get("/me", authenticateApiKey, async (req, res) => {
 
       if (memberError) {
         console.error("Error fetching user guilds:", memberError)
-        return res.status(500).json({ error: "Failed to fetch user guilds" })
+        return res.status(500).json({ error: "Failed to fetch user guilds", details: memberError.message })
       }
 
       const guildIds = memberGuilds.map((m) => m.guild_id)
@@ -50,32 +50,44 @@ router.get("/me", authenticateApiKey, async (req, res) => {
 
     if (error) {
       console.error("Error fetching guilds:", error)
-      return res.status(500).json({ error: "Failed to fetch guilds" })
+      return res.status(500).json({ error: "Failed to fetch guilds", details: error.message })
     }
 
     res.json(guilds || [])
   } catch (error) {
     console.error("Error in GET /guilds/me:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
 // Get specific guild
-router.get("/:guildId", authenticateApiKey, async (req, res) => {
+router.get("/:guildId", async (req, res) => {
   try {
-    const guildId = req.params.guildId.toString()
+    const { guildId } = req.params
 
-    const { data: guild, error } = await supabase.from("guilds").select("*").eq("guild_id", guildId).single()
+    console.log("Fetching guild:", guildId)
+
+    const { data, error } = await supabase.from("guilds").select("*").eq("guild_id", guildId).single()
 
     if (error) {
-      console.error("Error fetching guild:", error)
-      return res.status(404).json({ error: "Guild not found" })
+      if (error.code === "PGRST116") {
+        return res.status(404).json({ error: "Guild not found" })
+      }
+      console.error("Database error fetching guild:", error)
+      return res.status(500).json({
+        error: "Failed to fetch guild",
+        details: error.message,
+      })
     }
 
-    res.json(guild)
+    console.log("Successfully fetched guild:", guildId)
+    res.json(data)
   } catch (error) {
-    console.error("Error in GET /guilds/:guildId:", error)
-    res.status(500).json({ error: "Internal server error" })
+    console.error("Server error fetching guild:", error)
+    res.status(500).json({
+      error: "Internal server error",
+      details: error.message,
+    })
   }
 })
 
@@ -113,7 +125,7 @@ router.post("/:guildId/sync", authenticateApiKey, async (req, res) => {
 
     if (error) {
       console.error("Sync guild error:", error)
-      return res.status(500).json({ error: "Failed to sync guild" })
+      return res.status(500).json({ error: "Failed to sync guild", details: error.message })
     }
 
     res.json({
@@ -122,51 +134,248 @@ router.post("/:guildId/sync", authenticateApiKey, async (req, res) => {
     })
   } catch (error) {
     console.error("Error in POST /guilds/:guildId/sync:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
 // Add or update guild (UPSERT)
 router.post("/", authenticateApiKey, async (req, res) => {
   try {
-    const { guild_id, name, icon, description, owner_id, member_count, features, premium_tier } = req.body
+    console.log("📥 Received guild data:", JSON.stringify(req.body, null, 2))
+
+    const {
+      guild_id,
+      name,
+      description,
+      icon,
+      banner,
+      splash,
+      discovery_splash,
+      owner_id,
+      permissions,
+      region,
+      afk_channel_id,
+      afk_timeout,
+      widget_enabled,
+      widget_channel_id,
+      verification_level,
+      default_message_notifications,
+      explicit_content_filter,
+      roles,
+      emojis,
+      features,
+      mfa_level,
+      system_channel_id,
+      system_channel_flags,
+      rules_channel_id,
+      max_presences,
+      max_members,
+      vanity_url_code,
+      premium_tier,
+      premium_subscription_count,
+      preferred_locale,
+      public_updates_channel_id,
+      nsfw_level,
+      premium_progress_bar_enabled,
+      member_count,
+      large,
+      unavailable,
+      joined_at,
+      bot_permissions,
+    } = req.body
 
     if (!guild_id || !name) {
+      console.error("❌ Missing required fields:", { guild_id, name })
       return res.status(400).json({ error: "Guild ID and name are required" })
     }
 
-    // Convert all Discord IDs to strings to avoid UUID issues
     const guildData = {
       guild_id: guild_id.toString(),
       name,
-      icon: icon || null,
       description: description || null,
+      icon: icon || null,
+      banner: banner || null,
+      splash: splash || null,
+      discovery_splash: discovery_splash || null,
       owner_id: owner_id ? owner_id.toString() : null,
-      member_count: member_count || 0,
+      permissions: permissions || [],
+      region: region || null,
+      afk_channel_id: afk_channel_id ? afk_channel_id.toString() : null,
+      afk_timeout: afk_timeout || null,
+      widget_enabled: widget_enabled || false,
+      widget_channel_id: widget_channel_id ? widget_channel_id.toString() : null,
+      verification_level: verification_level || 0,
+      default_message_notifications: default_message_notifications || 0,
+      explicit_content_filter: explicit_content_filter || 0,
+      roles: roles || [],
+      emojis: emojis || [],
       features: features || [],
+      mfa_level: mfa_level || 0,
+      system_channel_id: system_channel_id ? system_channel_id.toString() : null,
+      system_channel_flags: system_channel_flags || [],
+      rules_channel_id: rules_channel_id ? rules_channel_id.toString() : null,
+      max_presences: max_presences || null,
+      max_members: max_members || null,
+      vanity_url_code: vanity_url_code || null,
       premium_tier: premium_tier || 0,
-      joined_at: new Date().toISOString(),
+      premium_subscription_count: premium_subscription_count || 0,
+      preferred_locale: preferred_locale || "en-US",
+      public_updates_channel_id: public_updates_channel_id ? public_updates_channel_id.toString() : null,
+      nsfw_level: nsfw_level || 0,
+      premium_progress_bar_enabled: premium_progress_bar_enabled || false,
+      member_count: member_count || 0,
+      large: large || false,
+      unavailable: unavailable || false,
+      joined_at: joined_at || new Date().toISOString(),
+      bot_permissions: bot_permissions || [],
       updated_at: new Date().toISOString(),
     }
 
-    // Use UPSERT to handle existing guilds
-    const { data: guild, error } = await supabase
+    console.log("💾 Attempting to upsert guild:", guildData.guild_id, guildData.name)
+
+    const { data, error } = await supabase
       .from("guilds")
       .upsert(guildData, {
         onConflict: "guild_id",
         ignoreDuplicates: false,
       })
       .select()
-      .single()
 
     if (error) {
-      console.error("Add guild error:", error)
-      return res.status(500).json({ error: "Failed to add guild", details: error.message })
+      console.error("❌ Database error:", error)
+      return res.status(500).json({
+        error: "Failed to save guild",
+        details: error.message,
+        hint: error.hint,
+        code: error.code,
+      })
     }
 
-    res.status(201).json(guild)
+    console.log("✅ Guild upserted successfully:", guildData.name)
+
+    // Also sync to guild_settings table
+    try {
+      const { error: settingsError } = await supabase
+        .from("guild_settings")
+        .upsert(
+          {
+            guild_id: guild_id.toString(),
+            guild_name: name,
+            prefix: "!",
+            mod_log_channel: null,
+            welcome_channel: null,
+            welcome_message: "Welcome to the server!",
+            leave_message: "Goodbye!",
+            auto_role: null,
+            level_up_message: true,
+            level_up_channel: null,
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "guild_id",
+            ignoreDuplicates: false,
+          },
+        )
+        .select()
+
+      if (settingsError) {
+        console.error("⚠️ Guild settings sync error:", settingsError)
+      } else {
+        console.log("✅ Guild settings synced")
+      }
+    } catch (settingsErr) {
+      console.error("⚠️ Guild settings sync failed:", settingsErr)
+    }
+
+    res.json({ success: true, data })
   } catch (error) {
-    console.error("Error in POST /guilds:", error)
+    console.error("❌ Add guild error:", error)
+    res.status(500).json({
+      error: "Internal server error",
+      details: error.message,
+    })
+  }
+})
+
+// Update guild settings
+router.put("/:guildId/settings", authenticateApiKey, async (req, res) => {
+  try {
+    const { guildId } = req.params
+    const settings = req.body
+
+    const { data, error } = await supabase
+      .from("guild_settings")
+      .upsert(
+        {
+          guild_id: guildId,
+          ...settings,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "guild_id",
+        },
+      )
+      .select()
+
+    if (error) {
+      console.error("Error updating guild settings:", error)
+      return res.status(500).json({ error: "Failed to update guild settings" })
+    }
+
+    res.json({ success: true, data })
+  } catch (error) {
+    console.error("Guild settings update error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+
+// Get guild settings
+router.get("/:guildId/settings", authenticateApiKey, async (req, res) => {
+  try {
+    const { guildId } = req.params
+
+    const { data: settings, error } = await supabase.from("guild_settings").select("*").eq("guild_id", guildId).single()
+
+    if (error && error.code !== "PGRST116") {
+      console.error("Error fetching guild settings:", error)
+      return res.status(500).json({ error: "Failed to fetch guild settings" })
+    }
+
+    res.json({ settings: settings || {} })
+  } catch (error) {
+    console.error("Guild settings fetch error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+
+// Update guild settings
+router.put("/:guildId/settings", authenticateApiKey, async (req, res) => {
+  try {
+    const { guildId } = req.params
+    const settings = req.body
+
+    const { data, error } = await supabase
+      .from("guild_settings")
+      .upsert(
+        {
+          guild_id: guildId,
+          ...settings,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "guild_id",
+        },
+      )
+      .select()
+
+    if (error) {
+      console.error("Error updating guild settings:", error)
+      return res.status(500).json({ error: "Failed to update guild settings" })
+    }
+
+    res.json({ success: true, data })
+  } catch (error) {
+    console.error("Guild settings update error:", error)
     res.status(500).json({ error: "Internal server error" })
   }
 })
@@ -188,13 +397,13 @@ router.patch("/:guildId", authenticateApiKey, async (req, res) => {
 
     if (error) {
       console.error("Error updating guild:", error)
-      return res.status(500).json({ error: "Failed to update guild" })
+      return res.status(500).json({ error: "Failed to update guild", details: error.message })
     }
 
     res.json(guild)
   } catch (error) {
     console.error("Error in PATCH /guilds/:guildId:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -207,13 +416,13 @@ router.delete("/:guildId", authenticateApiKey, requireAdmin, async (req, res) =>
 
     if (error) {
       console.error("Error deleting guild:", error)
-      return res.status(500).json({ error: "Failed to delete guild" })
+      return res.status(500).json({ error: "Failed to delete guild", details: error.message })
     }
 
     res.json({ success: true, message: "Guild deleted successfully" })
   } catch (error) {
     console.error("Error in DELETE /guilds/:guildId:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -230,13 +439,13 @@ router.get("/:guildId/commands", authenticateApiKey, async (req, res) => {
 
     if (error) {
       console.error("Error fetching guild commands:", error)
-      return res.status(500).json({ error: "Failed to fetch commands" })
+      return res.status(500).json({ error: "Failed to fetch commands", details: error.message })
     }
 
     res.json(commands || [])
   } catch (error) {
     console.error("Error in GET /guilds/:guildId/commands:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -280,7 +489,7 @@ router.post("/:guildId/commands/sync", authenticateApiKey, async (req, res) => {
     })
   } catch (error) {
     console.error("Error in POST /guilds/:guildId/commands/sync:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -308,13 +517,13 @@ router.put("/:guildId/commands/:commandName", authenticateApiKey, async (req, re
 
     if (error) {
       console.error("Error updating command:", error)
-      return res.status(500).json({ error: "Failed to update command" })
+      return res.status(500).json({ error: "Failed to update command", details: error.message })
     }
 
     res.json(command)
   } catch (error) {
     console.error("Error in PUT /guilds/:guildId/commands/:commandName:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -338,7 +547,7 @@ router.get("/:guildId/members", authenticateApiKey, async (req, res) => {
 
     if (error) {
       console.error("Error fetching guild members:", error)
-      return res.status(500).json({ error: "Failed to fetch guild members" })
+      return res.status(500).json({ error: "Failed to fetch guild members", details: error.message })
     }
 
     res.json({
@@ -352,7 +561,7 @@ router.get("/:guildId/members", authenticateApiKey, async (req, res) => {
     })
   } catch (error) {
     console.error("Error in GET /guilds/:guildId/members:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
@@ -406,7 +615,7 @@ router.get("/:guildId/analytics", authenticateApiKey, async (req, res) => {
     })
   } catch (error) {
     console.error("Error in GET /guilds/:guildId/analytics:", error)
-    res.status(500).json({ error: "Internal server error" })
+    res.status(500).json({ error: "Internal server error", details: error.message })
   }
 })
 
