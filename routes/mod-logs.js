@@ -36,7 +36,10 @@ router.get("/", authenticateApiKey, async (req, res) => {
       })
     }
 
-    res.json(data)
+    res.json({
+      success: true,
+      data,
+    })
   } catch (error) {
     console.error("Mod logs fetch error:", error)
     res.status(500).json({
@@ -51,27 +54,38 @@ router.post("/", authenticateApiKey, async (req, res) => {
   try {
     const { guild_id, user_id, moderator_id, action, reason, details, expires_at, case_id } = req.body
 
+    // Validate required fields
     if (!guild_id || !user_id || !moderator_id || !action) {
       return res.status(400).json({
         error: "Guild ID, User ID, Moderator ID, and Action are required",
+        received: { guild_id, user_id, moderator_id, action },
       })
     }
 
-    const { data, error } = await supabase
-      .from("mod_logs")
-      .insert({
-        guild_id,
-        user_id,
-        moderator_id,
-        action,
-        reason: reason || "No reason provided",
-        details: details || {},
-        expires_at,
-        case_id,
-        timestamp: new Date().toISOString(),
-      })
-      .select()
-      .single()
+    // Validate field lengths to prevent database errors
+    if (guild_id.length > 20) {
+      return res.status(400).json({ error: "Guild ID too long" })
+    }
+    if (user_id.length > 20) {
+      return res.status(400).json({ error: "User ID too long" })
+    }
+    if (moderator_id.length > 20) {
+      return res.status(400).json({ error: "Moderator ID too long" })
+    }
+
+    const logData = {
+      guild_id,
+      user_id,
+      moderator_id,
+      action,
+      reason: reason || "No reason provided",
+      details: details || {},
+      expires_at,
+      case_id,
+      timestamp: new Date().toISOString(),
+    }
+
+    const { data, error } = await supabase.from("mod_logs").insert(logData).select().single()
 
     if (error) {
       console.error("Error creating mod log:", error)
@@ -81,7 +95,10 @@ router.post("/", authenticateApiKey, async (req, res) => {
       })
     }
 
-    res.json({ success: true, data })
+    res.json({
+      success: true,
+      data,
+    })
   } catch (error) {
     console.error("Mod log creation error:", error)
     res.status(500).json({
