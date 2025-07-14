@@ -20,25 +20,42 @@ router.post("/", authenticateApiKey, async (req, res) => {
       return res.status(404).json({ error: "Guild not found. Please check the guild ID." })
     }
 
-    // Get all roles from Discord
-    const discordRoles = discordGuild.roles.cache.map((role) => ({
-      guild_id: guild_id,
-      role_id: role.id,
-      name: role.name,
-      color: role.color,
-      position: role.position,
-      permissions: role.permissions.bitfield.toString(),
-      mentionable: role.mentionable,
-      hoist: role.hoist,
-      managed: role.managed,
-      updated_at: new Date().toISOString(),
-    }))
+    console.log(`Syncing roles for guild: ${guild_id}`)
 
-    // Upsert roles to database
-    const { data, error } = await supabase
-      .from("roles")
-      .upsert(discordRoles, { onConflict: "guild_id,role_id" })
-      .select()
+    // Get all roles from Discord
+    const discordRoles = discordGuild.roles.cache.map((role) => {
+      // Ensure color is within valid range
+      let colorValue = role.color || 0
+      if (colorValue < 0) colorValue = 0
+      if (colorValue > 16777215) colorValue = 16777215
+
+      return {
+        role_id: role.id,
+        guild_id: guild_id,
+        name: role.name,
+        color: colorValue,
+        position: role.position,
+        permissions: role.permissions.bitfield.toString(),
+        mentionable: role.mentionable,
+        hoist: role.hoist,
+        managed: role.managed,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+    })
+
+    console.log(`Found ${discordRoles.length} roles to sync`)
+
+    // Clear existing roles for this guild first
+    const { error: deleteError } = await supabase.from("roles").delete().eq("guild_id", guild_id)
+
+    if (deleteError) {
+      console.error("Error clearing existing roles:", deleteError)
+      // Continue anyway
+    }
+
+    // Insert new roles
+    const { data, error } = await supabase.from("roles").insert(discordRoles).select()
 
     if (error) {
       console.error("Error syncing roles:", error)
@@ -47,6 +64,8 @@ router.post("/", authenticateApiKey, async (req, res) => {
         details: error.message,
       })
     }
+
+    console.log(`Successfully synced ${data.length} roles`)
 
     res.json({
       success: true,

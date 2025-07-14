@@ -43,21 +43,41 @@ router.post("/sync", authenticateApiKey, async (req, res) => {
       return res.status(404).json({ error: "Guild not found" })
     }
 
+    console.log(`Syncing roles for guild: ${guild_id}`)
+
     const discordRoles = guild.roles.cache
     const results = []
+
+    // Clear existing roles for this guild first
+    const { error: deleteError } = await supabase.from("roles").delete().eq("guild_id", guild_id)
+
+    if (deleteError) {
+      console.error("Error clearing existing roles:", deleteError)
+    }
 
     for (const [roleId, role] of discordRoles) {
       if (role.name === "@everyone") continue // Skip @everyone role
 
       try {
+        // Ensure color is within valid range
+        let colorValue = role.color || 0
+        if (colorValue < 0) colorValue = 0
+        if (colorValue > 16777215) colorValue = 16777215
+
         const { data, error } = await supabase
           .from("roles")
-          .upsert({
+          .insert({
             role_id: roleId,
             guild_id: guild_id,
             name: role.name,
-            color: role.color,
+            color: colorValue,
             permissions: role.permissions.bitfield.toString(),
+            position: role.position,
+            hoist: role.hoist,
+            mentionable: role.mentionable,
+            managed: role.managed,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
           })
           .select()
 
@@ -73,7 +93,10 @@ router.post("/sync", authenticateApiKey, async (req, res) => {
       }
     }
 
-    res.json({ results, synced: results.filter((r) => r.status === "success").length })
+    const successCount = results.filter((r) => r.status === "success").length
+    console.log(`Successfully synced ${successCount} roles`)
+
+    res.json({ results, synced: successCount })
   } catch (error) {
     console.error("Role sync error:", error)
     res.status(500).json({ error: "Internal server error" })
