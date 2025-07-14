@@ -6,7 +6,7 @@ const { authenticateApiKey } = require("../middleware/auth")
 const router = express.Router()
 
 // POST /sync-discord-roles - Sync Discord roles to database
-router.post("/api/sync-discord-roles", authenticateApiKey, async (req, res) => {
+router.post("/sync-discord-roles", authenticateApiKey, async (req, res) => {
   try {
     const { guild_id } = req.body
 
